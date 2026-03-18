@@ -1,0 +1,9 @@
+{
+  "name": "ship-sample",
+  "description": "Structure-only fixture for release readiness examples",
+  "init_git": false,
+  "required_paths": [
+    "README.md",
+    "docs/CHANGELOG.md"
+  ]
+}

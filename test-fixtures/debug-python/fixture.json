@@ -1,0 +1,12 @@
+{
+  "name": "debug-python",
+  "description": "Failing Python unittest fixture for debug/fix flows",
+  "init_git": true,
+  "required_paths": [
+    "src/parser.py",
+    "tests/test_parser.py",
+    ".autoresearch/targets/default.yaml"
+  ],
+  "verify_command": "python3 -m unittest discover -s tests -v",
+  "expected_exit": 1
+}

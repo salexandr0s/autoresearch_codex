@@ -1,0 +1,16 @@
+{
+  "name": "dirty-python",
+  "description": "Fixture that becomes dirty after the baseline commit",
+  "init_git": true,
+  "required_paths": [
+    "src/calculator.py",
+    "tests/test_calculator.py",
+    ".autoresearch/targets/default.yaml"
+  ],
+  "dirty_worktree": {
+    "path": "src/calculator.py",
+    "append": "\n# local dirty change\n"
+  },
+  "verify_command": "python3 -m unittest discover -s tests -v",
+  "expected_exit": 0
+}

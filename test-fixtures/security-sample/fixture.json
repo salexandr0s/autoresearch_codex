@@ -1,0 +1,8 @@
+{
+  "name": "security-sample",
+  "description": "Structure-only fixture with obviously risky code for documentation and review examples",
+  "init_git": false,
+  "required_paths": [
+    "src/app.py"
+  ]
+}

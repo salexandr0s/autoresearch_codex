@@ -1,0 +1,10 @@
+# Project-scoped Codex defaults for the Codex-first autoresearch repo.
+# Keep this small. Repository doctrine belongs in AGENTS.md.
+
+model = "gpt-5.4"
+review_model = "gpt-5.4"
+model_reasoning_effort = "medium"
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+project_root_markers = [".git", "AGENTS.md"]

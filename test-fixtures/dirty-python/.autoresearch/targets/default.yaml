@@ -1,0 +1,22 @@
+name: dirty-python
+goal: Exercise dirty-worktree handling for the loop
+scope:
+  include:
+    - src/**
+    - tests/**
+  exclude: []
+metric:
+  name: tests_run
+  direction: higher
+  extractor:
+    type: regex
+    value: 'Ran (\\d+) tests?'
+verify:
+  command: python3 -m unittest discover -s tests -v
+guard:
+  command: python3 -m py_compile src/calculator.py tests/test_calculator.py
+stopping:
+  max_iterations: 5
+  goal_threshold: null
+  stagnation_reflect_after: 3
+  stop_after_consecutive_failures: 5

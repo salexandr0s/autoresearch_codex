@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Autoresearch runtime state
+.autoresearch/runs/*
+!.autoresearch/runs/.gitkeep
+
+# Release output
+dist/
+
+# Temporary smoke output
+.tmp/

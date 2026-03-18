@@ -1,0 +1,20 @@
+name: debug-python
+goal: Reproduce a failing parser behavior before attempting a fix
+scope:
+  include:
+    - src/**
+    - tests/**
+  exclude: []
+metric:
+  name: failing_tests
+  direction: lower
+  extractor:
+    type: regex
+    value: 'FAILED \(failures=(\\d+)\)'
+verify:
+  command: python3 -m unittest discover -s tests -v
+stopping:
+  max_iterations: 5
+  goal_threshold: null
+  stagnation_reflect_after: 3
+  stop_after_consecutive_failures: 5

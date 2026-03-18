@@ -1,0 +1,55 @@
+# Prompt before remote-impacting git commands.
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Pushing modifies a shared remote and should stay user-approved.",
+    match = [
+        "git push",
+        "git push origin feature/codex-migration",
+    ],
+    not_match = [
+        "git status",
+    ],
+)
+
+# Prompt before publish/deploy style commands.
+prefix_rule(
+    pattern = [["npm", "pnpm", "yarn"], "publish"],
+    decision = "prompt",
+    justification = "Publishing packages is externally visible and should be explicitly approved.",
+    match = [
+        "npm publish",
+        "pnpm publish --access public",
+    ],
+    not_match = [
+        "npm install",
+    ],
+)
+
+# Forbid destructive hard reset as a routine workflow path.
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "Use a run branch, worktree isolation, or git revert instead of destructive reset.",
+    match = [
+        "git reset --hard",
+        "git reset --hard HEAD~1",
+    ],
+    not_match = [
+        "git reset --soft HEAD~1",
+    ],
+)
+
+# Prompt before remote merge actions.
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "prompt",
+    justification = "Merging a PR changes shared history and should remain user-approved.",
+    match = [
+        "gh pr merge 10",
+        "gh pr merge 10 --squash",
+    ],
+    not_match = [
+        "gh pr view 10",
+    ],
+)

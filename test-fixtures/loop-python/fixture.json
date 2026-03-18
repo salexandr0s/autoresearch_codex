@@ -1,0 +1,12 @@
+{
+  "name": "loop-python",
+  "description": "Passing Python unittest fixture",
+  "init_git": true,
+  "required_paths": [
+    "src/calculator.py",
+    "tests/test_calculator.py",
+    ".autoresearch/targets/default.yaml"
+  ],
+  "verify_command": "python3 -m unittest discover -s tests -v",
+  "expected_exit": 0
+}

@@ -1,0 +1,21 @@
+name: default
+goal: Replace this example goal with a measurable repository improvement
+scope:
+  include:
+    - src/**
+  exclude: []
+metric:
+  name: replace_me
+  direction: higher
+  extractor:
+    type: regex
+    value: 'replace with an explicit extractor'
+verify:
+  command: echo "define a real verify command"
+guard:
+  command: echo "define a real guard command if needed"
+stopping:
+  max_iterations: 10
+  goal_threshold: null
+  stagnation_reflect_after: 5
+  stop_after_consecutive_failures: 10
