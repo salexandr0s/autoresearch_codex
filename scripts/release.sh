@@ -31,6 +31,7 @@ for item in \
   AGENTS.md \
   README.md \
   CONTRIBUTING.md \
+  pyproject.toml \
   .gitignore \
   .codex \
   .agents \
@@ -38,6 +39,8 @@ for item in \
   codex \
   docs \
   scripts \
+  src \
+  tests \
   test-fixtures \
   legacy
   do

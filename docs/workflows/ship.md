@@ -1,12 +1,9 @@
-# autoresearch-ship
+# autoresearch ship
 
-Use this workflow for release readiness and carefully approved execution planning.
+Use `autoresearch ship` to create a ship checklist or dry-run release plan.
 
-## Modes
-- checklist
-- dry-run plan
-- execute with explicit approval
+```bash
+uv run autoresearch ship
+```
 
-## Output artifacts
-- `artifacts/ship-checklist.md`
-- optional `artifacts/release-plan.md`
+`--execute` does not perform unattended external side effects; it only asks Codex to produce an execution plan with explicit boundaries.

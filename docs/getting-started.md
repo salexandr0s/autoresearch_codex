@@ -1,56 +1,52 @@
 # Getting started
 
-## 1. Open the repo in Codex
+## 1. Install dependencies
 
-The repo is designed to load:
-- `AGENTS.md`
-- `.codex/config.toml`
-- `.agents/skills/`
+```bash
+uv sync
+```
 
-## 2. Use the planning flow first
+## 2. Validate the repo and Codex CLI
 
-Start with `autoresearch-plan` unless you already have a valid target file.
+```bash
+uv run autoresearch validate
+```
 
-Recommended prompt shape:
-- Goal:
-- Context:
-- Constraints:
-- Done when:
+## 3. Create a target
 
-## 3. Save a reusable target
-
-Place reusable targets under `.autoresearch/targets/`.
-
-Example fields:
-- goal
-- scope.include
-- metric.name
-- metric.direction
-- metric.extractor
-- verify.command
-- optional guard.command
-- stopping rules
+```bash
+uv run autoresearch plan \
+  --goal "Reduce failing parser tests" \
+  --context "Tokenizer changes introduced regressions" \
+  --constraints "Stay within src/parser and tests/parser" \
+  --done-when "The loop has a valid target file"
+```
 
 ## 4. Run the loop
 
-Use `autoresearch-loop` with the saved target.
+```bash
+uv run autoresearch loop --target .autoresearch/targets/default.yaml
+```
 
-Expected run artifacts:
+## 5. Resume if needed
+
+```bash
+uv run autoresearch resume --run-id <run-id>
+```
+
+## 6. Inspect artifacts
+
+Each run creates:
 - `target.yaml`
 - `baseline.json`
 - `results.tsv`
 - `summary.md`
-- `artifacts/`
-
-## 5. Inspect the result
-
-Review:
-- the run summary
-- the experiment branch or worktree
-- kept and discarded hypotheses
+- `engine.json`
+- `iterations/<n>/...`
 
 ## Notes
 
-- The full loop expects a git repository.
-- If the repo starts dirty, use worktree isolation.
-- If metric extraction is ambiguous, fix the target before continuing.
+- The runner expects a git repo.
+- The runner uses a dedicated worktree and branch.
+- Bounded mode is the default.
+- `--unbounded` is the explicit overnight mode.

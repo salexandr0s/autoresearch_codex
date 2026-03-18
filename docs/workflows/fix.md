@@ -1,12 +1,9 @@
-# autoresearch-fix
+# autoresearch fix
 
-Use this workflow when you already know the failing category or have debug findings.
+Use `autoresearch fix` to run the loop with an error-reduction target.
 
-## Keep rule
-Keep a fix only when the targeted error count decreases and any configured guard stays green.
+```bash
+uv run autoresearch fix --target .autoresearch/targets/default.yaml
+```
 
-## Typical targets
-- failing tests
-- lint errors
-- type errors
-- build failures
+If recent debug findings exist, the runner automatically includes them as context.

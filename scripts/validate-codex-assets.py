@@ -179,11 +179,15 @@ def main() -> int:
     require_exists("AGENTS.md")
     require_exists("README.md")
     require_exists("CONTRIBUTING.md")
+    require_exists("pyproject.toml")
     config = require_exists(".codex/config.toml")
     require_exists(".autoresearch/targets/default.yaml")
     require_exists("codex/rules/safety.rules")
     require_exists("scripts/release.sh")
     require_exists("scripts/smoke/run.py")
+    require_exists("src/autoresearch/cli.py")
+    require_exists("src/autoresearch/engine.py")
+    require_exists("tests/test_runtime.py")
 
     if config.exists():
         config_text = read_text(config)

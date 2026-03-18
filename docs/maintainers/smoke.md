@@ -1,14 +1,11 @@
 # Smoke checks
 
-Run both:
+Run:
 
 ```bash
-python3 scripts/validate-codex-assets.py
+uv run python scripts/validate-codex-assets.py
+uv run python -m unittest discover -s tests -v
 python3 scripts/smoke/run.py
 ```
 
-The smoke suite:
-- validates the repository structure
-- initializes temporary git repos for fixtures that require git
-- runs fixture verify commands when defined
-- checks dirty-worktree scenarios where declared
+The smoke suite validates assets, runs the unit/integration tests, and then runs the fixture checks.

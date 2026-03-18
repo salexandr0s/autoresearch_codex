@@ -5,6 +5,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.venv/
+*.egg-info/
 
 # Autoresearch runtime state
 .autoresearch/runs/*

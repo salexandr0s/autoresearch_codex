@@ -1,19 +1,15 @@
-# autoresearch-plan
+# autoresearch plan
 
-Use this workflow to turn a user goal into a validated target file.
+Use `autoresearch plan` to turn a goal into a validated target YAML file.
 
-## Input shape
-- Goal:
-- Context:
-- Constraints:
-- Done when:
+## Example
 
-## Responsibilities
-- infer scope and commands from repo context first
-- ask only for missing required information
-- make metric direction explicit
-- make extractor explicit
-- save a reusable target under `.autoresearch/targets/`
+```bash
+uv run autoresearch plan \
+  --goal "Reduce failing parser tests" \
+  --context "Tokenizer changes caused regressions" \
+  --constraints "Stay inside src/parser and tests/parser" \
+  --done-when "A reusable target exists"
+```
 
-## Required output
-A valid target that `autoresearch-loop` can consume directly.
+The runner asks Codex for one YAML target, validates it, and saves it under `.autoresearch/targets/`.

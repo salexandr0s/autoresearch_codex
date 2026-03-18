@@ -1,24 +1,20 @@
-# autoresearch-loop
+# autoresearch loop
 
-Use this workflow to run the disciplined improvement loop.
+Use `autoresearch loop` to run the keep/discard experiment cycle.
 
-## Preflight
-1. load target and repo context
-2. inspect git state
-3. inspect prior run memory
-4. inspect code context
-5. establish baseline
+## Example
 
-## Run behavior
-- one hypothesis per iteration
-- commit before verify
-- keep only verified improvements
-- discard failed experiments with a non-destructive revert
-- log every iteration outcome in `results.tsv`
+```bash
+uv run autoresearch loop --target .autoresearch/targets/default.yaml
+```
 
-## Run artifacts
-- `target.yaml`
-- `baseline.json`
-- `results.tsv`
-- `summary.md`
-- `artifacts/`
+The runner handles:
+- baseline
+- dedicated worktree/branch
+- one experiment commit per iteration
+- verify and optional guard
+- revert-based discard
+- results logging
+- summary generation
+
+Use `--unbounded` for a long-running unattended session.

@@ -63,7 +63,8 @@ def check_fixture(path: Path) -> None:
 
 
 def main() -> int:
-    run("python3 scripts/validate-codex-assets.py", ROOT)
+    run("uv run python scripts/validate-codex-assets.py", ROOT)
+    run("uv run python -m unittest discover -s tests -v", ROOT)
     fixture_paths = sorted(p for p in FIXTURES.iterdir() if p.is_dir() and (p / "fixture.json").exists())
     for fixture_path in fixture_paths:
         check_fixture(fixture_path)

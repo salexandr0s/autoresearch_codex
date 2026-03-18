@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autoresearch-codex"
+version = "0.2.0"
+description = "Runner-backed Codex adaptation of autoresearch"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0.2",
+  "jsonpath-ng>=1.7.0",
+]
+
+[project.scripts]
+autoresearch = "autoresearch.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autoresearch"]

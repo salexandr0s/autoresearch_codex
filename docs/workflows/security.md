@@ -1,13 +1,13 @@
-# autoresearch-security
+# autoresearch security
 
-Use this workflow for read-first security review.
+Default mode is read-only review:
 
-## Default posture
-Read-only unless the user explicitly opts into remediation.
+```bash
+uv run autoresearch security
+```
 
-## Output artifacts
-- `artifacts/security-findings.json`
-- `artifacts/security-report.md`
+Optional remediation mode uses the loop engine:
 
-## Severity gating
-Use `Fail on severity: <level>` when the user wants a thresholded result.
+```bash
+uv run autoresearch security --remediate --target .autoresearch/targets/default.yaml
+```

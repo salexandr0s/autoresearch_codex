@@ -1,20 +1,23 @@
 # Release flow
 
-## Principles
-- Codex-first assets are canonical.
-- Release validation must pass before packaging.
-- A compatibility bundle is optional and never the default source of truth.
+## Validate first
 
-## Dry-run
+```bash
+uv run python scripts/validate-codex-assets.py
+uv run python -m unittest discover -s tests -v
+python3 scripts/smoke/run.py
+```
+
+## Dry-run the release bundle
 
 ```bash
 bash scripts/release.sh --dry-run
 ```
 
-## Package a release bundle
+## Stage a release bundle
 
 ```bash
 bash scripts/release.sh dist/release
 ```
 
-The release script validates the repo first, then stages a clean bundle with the Codex-first assets.
+The release bundle now includes the runtime package, tests, docs, and Codex-first scaffold.

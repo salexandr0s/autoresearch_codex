@@ -1,15 +1,11 @@
-# autoresearch-debug
+# autoresearch debug
 
-Use this workflow when the problem is not yet diagnosed.
+Use `autoresearch debug` for evidence-first diagnosis.
 
-## Output artifacts
-- `artifacts/findings.json`
+```bash
+uv run autoresearch debug --summary "Investigate flaky parser behavior"
+```
+
+Artifacts:
 - `artifacts/findings.md`
-
-## Findings fields
-- id
-- symptom
-- suspected cause
-- evidence
-- confidence
-- suggested next fix
+- `artifacts/findings.json`
