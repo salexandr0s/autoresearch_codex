@@ -271,6 +271,23 @@ class RuntimeIntegrationTests(unittest.TestCase):
                 run_dir = Path(proc.stdout.strip())
                 self.assertTrue((run_dir / "artifacts" / artifact).exists())
 
+    def test_ship_execute_stays_dry_run_only(self) -> None:
+        self._init_git()
+        (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        self._commit_all("baseline")
+        self._set_queue([
+            {"final": "Hypothesis: prepare a dry-run ship plan\nSummary: generated ship checklist only\n"}
+        ])
+
+        proc = self._cli("ship", "--summary", "Deploy the fixture", "--execute")
+
+        run_dir = Path(proc.stdout.strip())
+        self.assertTrue((run_dir / "artifacts" / "ship-checklist.md").exists())
+        release_plan = (run_dir / "artifacts" / "release-plan.md").read_text(encoding="utf-8")
+        self.assertIn("Deploy the fixture", release_plan)
+        self.assertIn("Execution was requested, but the runner must not perform unattended push/publish/deploy/merge/send actions.", release_plan)
+        self.assertIn("Produce a dry-run plan only.", release_plan)
+
 
 if __name__ == "__main__":
     unittest.main()
