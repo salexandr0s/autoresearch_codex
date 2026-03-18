@@ -23,6 +23,7 @@ FORBIDDEN_STRINGS = [
     "@anthropic-ai/claude-code",
 ]
 FORBIDDEN_SCAN_EXCLUDES = {
+    Path("docs/internal"),
     Path("buildplan.md"),
     Path("architecture.md"),
     Path("checklist.md"),
@@ -36,6 +37,11 @@ errors: list[str] = []
 
 def rel(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
+
+
+def should_skip_validation_path(path: Path) -> bool:
+    relative = path.relative_to(ROOT)
+    return relative == Path("docs/internal") or Path("docs/internal") in relative.parents
 
 
 def fail(message: str) -> None:
@@ -81,6 +87,8 @@ def validate_positive_int(block: str, field: str, path: Path) -> None:
 
 
 def validate_target_file(path: Path) -> None:
+    if should_skip_validation_path(path):
+        return
     text = read_text(path)
     if not re.search(r"^name:\s*\S", text, re.M):
         fail(f"{rel(path)}: missing top-level name")
@@ -218,11 +226,15 @@ def main() -> int:
             validate_target_file(path)
 
     for path in ROOT.rglob("*.md"):
+        if should_skip_validation_path(path):
+            continue
         if "/.autoresearch/runs/" in path.as_posix():
             continue
         validate_markdown_links(path)
 
     for path in ROOT.rglob("*"):
+        if should_skip_validation_path(path):
+            continue
         if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
             continue
         scan_for_forbidden_strings(path)

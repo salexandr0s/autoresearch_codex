@@ -17,3 +17,6 @@ dist/
 
 # Temporary smoke output
 .tmp/
+
+# Local/internal docs
+docs/internal/
