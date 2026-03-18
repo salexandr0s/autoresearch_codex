@@ -1,8 +1,8 @@
 # autoresearch_codex
 
-`autoresearch_codex` is a **runner-backed, Codex-native adaptation** of [Andrej Karpathy's `autoresearch`](https://github.com/karpathy/autoresearch), generalized from a narrow single-program optimization loop into a **repo-oriented improvement system**.
+**Repo-oriented Codex port of [Andrej Karpathy's `autoresearch`](https://github.com/karpathy/autoresearch).**
 
-The original `autoresearch` idea is simple and powerful:
+`autoresearch_codex` takes the core idea from the original `autoresearch`:
 - establish a baseline
 - try one hypothesis at a time
 - verify mechanically
@@ -10,7 +10,20 @@ The original `autoresearch` idea is simple and powerful:
 - log what happened
 - repeat
 
-This repo keeps that core loop, but adapts it for **real repositories** and for **Codex** instead of Claude-centric promptware.
+and adapts it to **real repositories** and **Codex**.
+
+## What this is
+
+This is a real, runner-backed CLI for repository improvement loops.
+
+It is **not just promptware**. The runner actually:
+- creates isolated git-backed run branches and worktrees
+- calls Codex for one bounded task at a time
+- runs verify and optional guard commands
+- keeps or reverts experiments based on a metric
+- logs artifacts under `.autoresearch/runs/<run-id>/`
+
+If you like Karpathy's original `autoresearch` idea but want it applied to general repos and Codex-based workflows, that is what this project is trying to be.
 
 ## What this can do
 
