@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -29,6 +28,14 @@ from .prompts import (
     build_report_prompt,
     parse_hypothesis,
     parse_summary,
+)
+from .platform import (
+    apple_silicon_ml_status,
+    collect_platform_report,
+    generic_workflow_status,
+    platform_warning_messages,
+    render_platform_messages,
+    target_platform_warning_messages,
 )
 from .runs import (
     append_result,
@@ -58,6 +65,11 @@ DEFAULT_REPORT_DEADLINE_SECONDS = 120
 def run_validate(repo: Path, target_path: str | None, codex_bin: str | None, check_codex: bool) -> tuple[bool, list[str]]:
     messages: list[str] = []
     ok = True
+    platform_report = collect_platform_report(codex_bin)
+    messages.extend(render_platform_messages(platform_report))
+    for warning in platform_warning_messages(platform_report):
+        messages.append(f"warning: {warning}")
+
     validator = repo / "scripts" / "validate-codex-assets.py"
     if validator.exists():
         proc = subprocess.run([sys.executable, str(validator)], cwd=str(repo), text=True, capture_output=True)
@@ -72,8 +84,10 @@ def run_validate(repo: Path, target_path: str | None, codex_bin: str | None, che
 
     if target_path:
         try:
-            load_target(resolve_target_path(repo, target_path))
+            target = load_target(resolve_target_path(repo, target_path))
             messages.append(f"target ok: {target_path}")
+            for warning in target_platform_warning_messages(platform_report, target):
+                messages.append(f"warning: {warning}")
         except Exception as exc:  # noqa: BLE001
             ok = False
             messages.append(f"target invalid: {exc}")
@@ -88,6 +102,14 @@ def run_validate(repo: Path, target_path: str | None, codex_bin: str | None, che
         except Exception as exc:  # noqa: BLE001
             ok = False
             messages.append(f"codex unavailable: {exc}")
+    elif not platform_report.codex_available:
+        messages.append("warning: Codex CLI was not verified and was not found on PATH.")
+
+    if generic_workflow_status(platform_report) == "blocked":
+        ok = False
+    ml_status = apple_silicon_ml_status(platform_report)
+    if platform_report.is_macos and platform_report.is_apple_silicon and ml_status == "best-effort":
+        messages.append("warning: Apple Silicon ML workflows are only best-effort until the target repo confirms torch+MPS support.")
     return ok, messages
 
 

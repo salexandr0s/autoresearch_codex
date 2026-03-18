@@ -38,6 +38,7 @@ for item in \
   .autoresearch \
   codex \
   docs \
+  examples \
   scripts \
   src \
   tests \

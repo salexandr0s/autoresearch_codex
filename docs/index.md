@@ -2,6 +2,8 @@
 
 ## Start here
 - [Getting started](getting-started.md)
+- [macOS guide](platforms/macos.md)
+- [`autoresearch-macos` example](examples/autoresearch-macos.md)
 - [Troubleshooting](troubleshooting.md)
 - [Migration notes](migration/from-claude.md)
 

@@ -1,0 +1,19 @@
+name: macos-tests-growth
+goal: Increase passing regression coverage on a macOS-friendly repo
+scope:
+  include:
+    - tests/**
+  exclude: []
+metric:
+  name: test_count
+  direction: higher
+  extractor:
+    type: regex
+    value: 'Ran ([0-9]+) tests?'
+verify:
+  command: uv run python -m unittest discover -s tests -v
+stopping:
+  max_iterations: 6
+  goal_threshold: null
+  stagnation_reflect_after: 3
+  stop_after_consecutive_failures: 6

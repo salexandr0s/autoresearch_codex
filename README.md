@@ -12,6 +12,8 @@
 
 and adapts it to **real repositories** and **Codex**.
 
+It also works on **macOS**, including Apple Silicon, for repo-oriented loops. For Karpathy-style local ML repos on Mac, this runner owns the outer loop while the **target repo** owns MPS/Metal portability.
+
 ## What this is
 
 This is a real, runner-backed CLI for repository improvement loops.
@@ -43,6 +45,18 @@ with these workflows:
 - `ship` — produce a release-readiness checklist and dry-run plan
 - `resume` — continue a prior iterative run
 - `validate` — verify scaffold + runtime prerequisites
+
+## macOS and `autoresearch-macos`
+
+This repo is already usable on macOS today.
+
+- For normal repo workflows, it works as a generic runner on Mac.
+- For Karpathy-style training repos, it can now infer `train.py` / `val_bpb` targets more directly.
+- It does **not** automatically convert CUDA-only training code to MPS; that portability work belongs in the target repo, which is exactly what [`autoresearch-macos`](docs/examples/autoresearch-macos.md) demonstrates.
+
+See:
+- [macOS guide](docs/platforms/macos.md)
+- [`autoresearch-macos` example](docs/examples/autoresearch-macos.md)
 
 ## What makes it different from Karpathy's original project
 

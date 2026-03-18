@@ -1,0 +1,19 @@
+name: karpathy-train-loop
+goal: Lower val_bpb in a Karpathy-style training repo on Apple Silicon
+scope:
+  include:
+    - train.py
+  exclude: []
+metric:
+  name: val_bpb
+  direction: lower
+  extractor:
+    type: regex
+    value: '(?m)^val_bpb:\s*([0-9.]+)$'
+verify:
+  command: uv run train.py
+stopping:
+  max_iterations: 12
+  goal_threshold: null
+  stagnation_reflect_after: 5
+  stop_after_consecutive_failures: 10

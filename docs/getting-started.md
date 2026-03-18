@@ -12,6 +12,8 @@ uv sync
 uv run autoresearch validate
 ```
 
+On macOS, `validate` also reports Apple Silicon, Xcode CLT, `caffeinate`, and optional torch/MPS status. See the [macOS guide](platforms/macos.md).
+
 ## 3. Create a target
 
 ```bash
@@ -50,3 +52,4 @@ Each run creates:
 - The runner uses a dedicated worktree and branch.
 - Bounded mode is the default.
 - `--unbounded` is the explicit overnight mode.
+- For Karpathy-style local ML repos on Mac, this runner owns the outer loop; target-repo MPS/CUDA portability stays in the target repo.

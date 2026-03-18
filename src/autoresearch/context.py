@@ -108,7 +108,7 @@ def build_context_workspace(
 
     repo_facts = _gather_repo_facts(repo_root)
     candidate_verify_commands = _guess_verify_commands(repo_root, repo_facts)
-    candidate_scope_globs = _guess_scope_globs(repo_root, workflow, request_text)
+    candidate_scope_globs = _guess_scope_globs(repo_root, workflow, request_text, repo_facts)
     metric_candidates = _guess_metric_candidates(repo_facts, request_text)
     selected = _select_context_files(repo_root, workflow, request_text, repo_facts)
 
@@ -261,10 +261,16 @@ def _gather_repo_facts(repo_root: Path) -> dict[str, Any]:
     tests_dir = repo_root / "tests"
     src_dir = repo_root / "src"
     docs_dir = repo_root / "docs"
+    train_py = repo_root / "train.py"
+    prepare_py = repo_root / "prepare.py"
+    program_md = repo_root / "program.md"
     test_files = sum(1 for _ in _iter_text_files(tests_dir)) if tests_dir.exists() else 0
     src_files = sum(1 for _ in _iter_text_files(src_dir)) if src_dir.exists() else 0
     has_unittest = _tests_use_unittest(repo_root)
     has_pytest = _tests_use_pytest(repo_root)
+    mentions_val_bpb = _repo_mentions(repo_root, ("val_bpb",))
+    mentions_peak_vram_mb = _repo_mentions(repo_root, ("peak_vram_mb",))
+    looks_like_karpathy_training_repo = train_py.exists() and prepare_py.exists() and program_md.exists()
     return {
         "repo_name": repo_root.name,
         "manifests": manifests,
@@ -276,12 +282,22 @@ def _gather_repo_facts(repo_root: Path) -> dict[str, Any]:
         "src_file_count": src_files,
         "has_unittest": has_unittest,
         "has_pytest": has_pytest,
+        "has_train_py": train_py.exists(),
+        "has_prepare_py": prepare_py.exists(),
+        "has_program_md": program_md.exists(),
+        "mentions_val_bpb": mentions_val_bpb,
+        "mentions_peak_vram_mb": mentions_peak_vram_mb,
+        "looks_like_karpathy_training_repo": looks_like_karpathy_training_repo,
         "existing_targets": sorted(path.name for path in (repo_root / ".autoresearch" / "targets").glob("*.yaml")) if (repo_root / ".autoresearch" / "targets").exists() else [],
     }
 
 
 def _guess_verify_commands(repo_root: Path, repo_facts: dict[str, Any]) -> list[str]:
     commands: list[str] = []
+    if repo_facts.get("has_train_py"):
+        if (repo_root / "uv.lock").exists() or (repo_root / "pyproject.toml").exists():
+            commands.append("uv run train.py")
+        commands.append("python3 train.py")
     if repo_facts.get("has_tests_dir") and repo_facts.get("has_unittest"):
         if (repo_root / "uv.lock").exists():
             commands.append("uv run python -m unittest discover -s tests -v")
@@ -299,12 +315,15 @@ def _guess_verify_commands(repo_root: Path, repo_facts: dict[str, Any]) -> list[
     return unique
 
 
-def _guess_scope_globs(repo_root: Path, workflow: Workflow, request_text: str) -> list[str]:
+def _guess_scope_globs(repo_root: Path, workflow: Workflow, request_text: str, repo_facts: dict[str, Any]) -> list[str]:
     explicit = _explicit_scope_globs(request_text)
     if explicit:
         return explicit
     lowered = request_text.lower()
     scopes: list[str] = []
+    if repo_facts.get("looks_like_karpathy_training_repo"):
+        if workflow == "plan" or any(token in lowered for token in ("train", "training", "research", "bpb", "val_bpb", "benchmark")):
+            scopes.append("train.py")
     if "test" in lowered or "coverage" in lowered or "regression" in lowered:
         if (repo_root / "tests").exists():
             scopes.append("tests/**")
@@ -321,6 +340,18 @@ def _guess_scope_globs(repo_root: Path, workflow: Workflow, request_text: str) -
 def _guess_metric_candidates(repo_facts: dict[str, Any], request_text: str) -> list[dict[str, Any]]:
     lowered = request_text.lower()
     candidates: list[dict[str, Any]] = []
+    if repo_facts.get("looks_like_karpathy_training_repo") or repo_facts.get("mentions_val_bpb") or any(
+        token in lowered for token in ("val_bpb", "bpb", "train", "training", "benchmark", "research")
+    ):
+        candidates.append(
+            {
+                "name": "val_bpb",
+                "direction": "lower",
+                "goal_threshold": None,
+                "when": "Use for Karpathy-style training repos that emit validation bits-per-byte.",
+                "extractor": {"type": "regex", "value": r"(?m)^val_bpb:\s*([0-9.]+)$"},
+            }
+        )
     if repo_facts.get("has_tests_dir") and repo_facts.get("has_unittest"):
         candidates.append(
             {
@@ -390,6 +421,7 @@ def _pinned_files(repo_root: Path, workflow: Workflow) -> list[Path]:
     shared = ["README.md", "pyproject.toml", "package.json"]
     if workflow == "plan":
         shared.append(".autoresearch/targets/default.yaml")
+        shared.extend(["program.md", "train.py", "prepare.py"])
     for relative in shared:
         path = repo_root / relative
         if path.exists():
@@ -422,7 +454,7 @@ def _query_terms(text: str, workflow: Workflow) -> list[str]:
         }
     )
     if workflow == "plan":
-        terms.update({"target", "tests", "src"})
+        terms.update({"target", "tests", "src", "train", "val_bpb"})
     elif workflow == "debug":
         terms.update({"debug", "fail", "error", "traceback"})
     elif workflow == "security":
@@ -437,6 +469,8 @@ def _score_file(path: Path, query_terms: list[str], workflow: Workflow, repo_fac
     score = 0
     if workflow == "plan" and any(name in rel for name in ["pyproject.toml", "README.md", "tests/", "src/"]):
         score += 5
+    if workflow == "plan" and repo_facts.get("looks_like_karpathy_training_repo") and rel in {"train.py", "prepare.py", "program.md"}:
+        score += 7
     if workflow == "debug" and any(name in rel for name in ["src/", "tests/"]):
         score += 4
     if workflow == "security" and any(name in rel for name in ["src/", "scripts/", ".codex/", "AGENTS.md"]):
@@ -563,6 +597,9 @@ def _choose_metric_candidate(goal: str, candidates: list[dict[str, Any]]) -> dic
         return None
     lowered = goal.lower()
     for candidate in candidates:
+        if any(token in lowered for token in ("val_bpb", "bpb", "train", "training", "research", "benchmark")):
+            if candidate["name"] == "val_bpb":
+                return candidate
         if "coverage" in lowered or "regression" in lowered or "test" in lowered:
             if candidate["name"] == "test_count":
                 return candidate
@@ -596,6 +633,9 @@ def _render_context_summary(
         f"- src dir: {'yes' if repo_facts['has_src_dir'] else 'no'}",
         f"- unittest detected: {'yes' if repo_facts['has_unittest'] else 'no'}",
         f"- pytest detected: {'yes' if repo_facts['has_pytest'] else 'no'}",
+        f"- Karpathy-style training repo: {'yes' if repo_facts['looks_like_karpathy_training_repo'] else 'no'}",
+        f"- val_bpb output detected: {'yes' if repo_facts['mentions_val_bpb'] else 'no'}",
+        f"- peak_vram_mb mentioned: {'yes' if repo_facts['mentions_peak_vram_mb'] else 'no'}",
         "",
         "The runner already pre-selected the relevant repository context.",
         "Use this summary and the copied `files/` tree as authoritative inputs.",
@@ -634,6 +674,17 @@ def _render_context_summary(
     lines.append("")
     lines.append("Use only this summary plus files in `files/`. Do not perform broad repository discovery.")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _repo_mentions(repo_root: Path, needles: tuple[str, ...]) -> bool:
+    haystack_paths = [repo_root / "README.md", repo_root / "program.md", repo_root / "train.py", repo_root / "prepare.py"]
+    for path in haystack_paths:
+        if not path.exists():
+            continue
+        preview = _safe_read(path, max_bytes=12_000).lower()
+        if any(needle.lower() in preview for needle in needles):
+            return True
+    return False
 
 
 def _fallback_next_steps(workflow: Workflow, context_packet: ContextPacket) -> str:

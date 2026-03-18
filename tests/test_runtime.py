@@ -168,12 +168,40 @@ class RuntimeIntegrationTests(unittest.TestCase):
         summary = (run_dir / "summary.md").read_text(encoding="utf-8")
         self.assertIn("completion mode: fallback", summary)
 
+    def test_plan_fallback_infers_karpathy_style_train_target(self) -> None:
+        self._init_git()
+        (self.repo / "README.md").write_text("autoresearch-style training repo\nval_bpb is the main metric\n", encoding="utf-8")
+        (self.repo / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+        (self.repo / "program.md").write_text("Optimize train.py for lower val_bpb.\n", encoding="utf-8")
+        (self.repo / "prepare.py").write_text("print('prepare')\n", encoding="utf-8")
+        (self.repo / "train.py").write_text("print('val_bpb: 1.234567')\nprint('peak_vram_mb: 0')\n", encoding="utf-8")
+        self._commit_all("baseline")
+        self._set_queue([{"final": "{}"}])
+        proc = self._cli(
+            "plan",
+            "--goal",
+            "Improve validation bits-per-byte in the training loop",
+            "--target-name",
+            "karpathy-train",
+        )
+        target_path = Path(proc.stdout.strip())
+        text = target_path.read_text(encoding="utf-8")
+        self.assertIn("train.py", text)
+        self.assertIn("val_bpb", text)
+        self.assertIn("direction: lower", text)
+        self.assertIn("uv run train.py", text)
+
     def test_scaffold_validator_passes_in_target_repo_mode(self) -> None:
         self._init_git()
         (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
         self._commit_all("baseline")
         proc = self._run("python3 scripts/validate-codex-assets.py")
         self.assertIn("validation passed", proc.stdout)
+
+    def test_validate_reports_platform_diagnostics(self) -> None:
+        proc = self._cli("validate")
+        self.assertIn("platform: os=", proc.stdout)
+        self.assertIn("generic repo workflows:", proc.stdout)
 
     def test_loop_keeps_improvement_and_discards_regression(self) -> None:
         self._init_git()

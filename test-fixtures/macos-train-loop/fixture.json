@@ -1,0 +1,12 @@
+{
+  "name": "macos-train-loop",
+  "description": "Synthetic Karpathy-style training fixture for macOS planning heuristics",
+  "init_git": false,
+  "required_paths": [
+    "train.py",
+    "prepare.py",
+    "program.md"
+  ],
+  "verify_command": "python3 train.py",
+  "expected_exit": 0
+}

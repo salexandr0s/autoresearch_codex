@@ -197,6 +197,10 @@ def main() -> int:
         require_exists("CONTRIBUTING.md")
         require_exists("pyproject.toml")
         require_exists(".autoresearch/targets/default.yaml")
+        require_exists("docs/platforms/macos.md")
+        require_exists("docs/examples/autoresearch-macos.md")
+        require_exists("examples/macos/karpathy-train-loop.yaml")
+        require_exists("examples/macos/tests-growth.yaml")
         require_exists("scripts/release.sh")
         require_exists("scripts/smoke/run.py")
         require_exists("src/autoresearch/cli.py")
@@ -220,6 +224,7 @@ def main() -> int:
     target_paths = sorted(targets_root.glob("*.yaml")) if targets_root.exists() else []
     if is_runtime_repo:
         target_paths.extend(sorted((ROOT / "test-fixtures").glob("*/.autoresearch/targets/*.yaml")))
+        target_paths.extend(sorted((ROOT / "examples").glob("**/*.yaml")))
 
     for path in target_paths:
         if path.exists():

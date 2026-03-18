@@ -7,6 +7,7 @@ from pathlib import Path
 from autoresearch.context import build_context_workspace, infer_fallback_target
 from autoresearch.metrics import extract_metric
 from autoresearch.models import MetricExtractor
+from autoresearch.platform import PlatformReport, platform_warning_messages, target_platform_warning_messages
 from autoresearch.prompts import build_plan_prompt
 from autoresearch.targets import parse_target
 
@@ -115,6 +116,101 @@ class TargetAndMetricTests(unittest.TestCase):
             self.assertEqual(target.metric.name, "test_count")
             self.assertEqual(target.metric.direction, "higher")
             self.assertIn("unittest", target.verify.command)
+
+    def test_plan_fallback_target_infers_val_bpb_for_karpathy_style_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            (repo / "README.md").write_text("Karpathy-style fixture\nmetric: val_bpb\n", encoding="utf-8")
+            (repo / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+            (repo / "program.md").write_text("Each experiment edits train.py and optimizes val_bpb.\n", encoding="utf-8")
+            (repo / "prepare.py").write_text("print('prepare')\n", encoding="utf-8")
+            (repo / "train.py").write_text("print('val_bpb: 1.234567')\nprint('peak_vram_mb: 0')\n", encoding="utf-8")
+            run_root = repo / ".autoresearch" / "runs" / "test"
+            artifacts = run_root / "artifacts"
+            context_workspace = run_root / "context"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            packet = build_context_workspace(
+                repo_root=repo,
+                workspace=context_workspace,
+                artifacts_dir=artifacts,
+                workflow="plan",
+                request_text="Improve the training loop for this autoresearch-style repo",
+            )
+            target = infer_fallback_target(
+                target_name="train-loop",
+                goal="Improve the training loop for this autoresearch-style repo",
+                constraints="",
+                context_packet=packet,
+            )
+            self.assertIsNotNone(target)
+            assert target is not None
+            self.assertEqual(target.metric.name, "val_bpb")
+            self.assertEqual(target.metric.direction, "lower")
+            self.assertEqual(target.verify.command, "uv run train.py")
+            self.assertEqual(target.scope.include, ["train.py"])
+
+    def test_platform_warning_messages_for_macos_edge_cases(self) -> None:
+        report = PlatformReport(
+            os_name="darwin",
+            arch="x86_64",
+            is_macos=True,
+            is_apple_silicon=False,
+            python_version="3.11.9",
+            git_available=True,
+            uv_available=True,
+            codex_available=True,
+            caffeinate_available=False,
+            xcode_clt_available=False,
+            torch_importable=True,
+            torch_version="2.6.0",
+            mps_available=False,
+            cuda_available=False,
+        )
+        warnings = platform_warning_messages(report)
+        self.assertTrue(any("Intel Mac" in item for item in warnings))
+        self.assertTrue(any("caffeinate" in item for item in warnings))
+        self.assertTrue(any("Xcode Command Line Tools" in item for item in warnings))
+
+    def test_target_platform_warning_messages_for_peak_vram_on_macos(self) -> None:
+        report = PlatformReport(
+            os_name="darwin",
+            arch="arm64",
+            is_macos=True,
+            is_apple_silicon=True,
+            python_version="3.11.9",
+            git_available=True,
+            uv_available=True,
+            codex_available=True,
+            caffeinate_available=True,
+            xcode_clt_available=True,
+            torch_importable=True,
+            torch_version="2.6.0",
+            mps_available=True,
+            cuda_available=False,
+        )
+        target = parse_target(
+            {
+                "name": "mac-vram",
+                "goal": "Lower peak_vram_mb on a CUDA-style target",
+                "scope": {"include": ["train.py"], "exclude": []},
+                "metric": {
+                    "name": "peak_vram_mb",
+                    "direction": "lower",
+                    "extractor": {"type": "regex", "value": r"peak_vram_mb:\s*([0-9.]+)"},
+                },
+                "verify": {"command": "python3 train.py --cuda"},
+                "stopping": {
+                    "max_iterations": 3,
+                    "goal_threshold": None,
+                    "stagnation_reflect_after": 2,
+                    "stop_after_consecutive_failures": 3,
+                },
+            }
+        )
+        warnings = target_platform_warning_messages(report, target)
+        self.assertTrue(any("CUDA/NVIDIA" in item for item in warnings))
+        self.assertTrue(any("peak_vram_mb" in item for item in warnings))
 
     def test_ship_context_excludes_skills_and_test_fixtures(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

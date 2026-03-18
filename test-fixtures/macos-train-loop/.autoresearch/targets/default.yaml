@@ -1,0 +1,19 @@
+name: macos-train-loop
+goal: Lower val_bpb in the synthetic training loop
+scope:
+  include:
+    - train.py
+  exclude: []
+metric:
+  name: val_bpb
+  direction: lower
+  extractor:
+    type: regex
+    value: '(?m)^val_bpb:\s*([0-9.]+)$'
+verify:
+  command: python3 train.py
+stopping:
+  max_iterations: 4
+  goal_threshold: null
+  stagnation_reflect_after: 2
+  stop_after_consecutive_failures: 4
