@@ -29,7 +29,7 @@ def run_codex(
     search: bool = False,
 ) -> BackendResult:
     final_message_file.parent.mkdir(parents=True, exist_ok=True)
-    command = [codex_bin, "exec", "--full-auto", "-C", str(cwd), "-o", str(final_message_file), "--json"]
+    command = [codex_bin, "-a", "never", "-s", "workspace-write", "exec", "-C", str(cwd), "-o", str(final_message_file), "--json"]
     if model:
         command.extend(["--model", model])
     if profile:

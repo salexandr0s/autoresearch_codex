@@ -1,0 +1,19 @@
+name: live-dogfood-tests
+goal: Increase regression coverage for the new runtime
+scope:
+  include:
+    - tests/**
+  exclude: []
+metric:
+  name: test_count
+  direction: higher
+  extractor:
+    type: regex
+    value: 'Ran ([0-9]+) tests?'
+verify:
+  command: uv run python -m unittest discover -s tests -v
+stopping:
+  max_iterations: 2
+  goal_threshold: 8
+  stagnation_reflect_after: 1
+  stop_after_consecutive_failures: 2
