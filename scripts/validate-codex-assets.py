@@ -176,18 +176,24 @@ def scan_for_forbidden_strings(path: Path) -> None:
 
 
 def main() -> int:
+    is_runtime_repo = (ROOT / "src" / "autoresearch" / "cli.py").exists()
+
     require_exists("AGENTS.md")
-    require_exists("README.md")
-    require_exists("CONTRIBUTING.md")
-    require_exists("pyproject.toml")
     config = require_exists(".codex/config.toml")
-    require_exists(".autoresearch/targets/default.yaml")
     require_exists("codex/rules/safety.rules")
-    require_exists("scripts/release.sh")
-    require_exists("scripts/smoke/run.py")
-    require_exists("src/autoresearch/cli.py")
-    require_exists("src/autoresearch/engine.py")
-    require_exists("tests/test_runtime.py")
+
+    targets_root = require_exists(".autoresearch/targets")
+
+    if is_runtime_repo:
+        require_exists("README.md")
+        require_exists("CONTRIBUTING.md")
+        require_exists("pyproject.toml")
+        require_exists(".autoresearch/targets/default.yaml")
+        require_exists("scripts/release.sh")
+        require_exists("scripts/smoke/run.py")
+        require_exists("src/autoresearch/cli.py")
+        require_exists("src/autoresearch/engine.py")
+        require_exists("tests/test_runtime.py")
 
     if config.exists():
         config_text = read_text(config)
@@ -203,7 +209,11 @@ def main() -> int:
         for skill_name in sorted(existing_skills):
             validate_skill_dir(skills_root / skill_name)
 
-    for path in [ROOT / ".autoresearch/targets/default.yaml", *sorted((ROOT / "test-fixtures").glob("*/.autoresearch/targets/*.yaml"))]:
+    target_paths = sorted(targets_root.glob("*.yaml")) if targets_root.exists() else []
+    if is_runtime_repo:
+        target_paths.extend(sorted((ROOT / "test-fixtures").glob("*/.autoresearch/targets/*.yaml")))
+
+    for path in target_paths:
         if path.exists():
             validate_target_file(path)
 

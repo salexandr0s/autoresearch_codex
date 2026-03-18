@@ -145,6 +145,13 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertTrue(target_path.exists())
         self.assertIn("metric:", target_path.read_text(encoding="utf-8"))
 
+    def test_scaffold_validator_passes_in_target_repo_mode(self) -> None:
+        self._init_git()
+        (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        self._commit_all("baseline")
+        proc = self._run("python3 scripts/validate-codex-assets.py")
+        self.assertIn("validation passed", proc.stdout)
+
     def test_loop_keeps_improvement_and_discards_regression(self) -> None:
         self._init_git()
         (self.repo / "app.txt").write_text("score=1\n", encoding="utf-8")
