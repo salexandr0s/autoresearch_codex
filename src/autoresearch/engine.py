@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .backend import resolve_codex_bin, run_codex
+from .context import ContextPacket, build_context_workspace, build_report_fallback, infer_fallback_target
 from .errors import BlockedRunError, ValidationError
 from .gitops import (
     changed_files,
@@ -26,7 +27,6 @@ from .prompts import (
     build_iteration_prompt,
     build_plan_prompt,
     build_report_prompt,
-    extract_fenced_block,
     parse_hypothesis,
     parse_summary,
 )
@@ -46,10 +46,13 @@ from .runs import (
     write_target_snapshot,
     read_results,
 )
+from .schemas import write_plan_output_schema, write_report_output_schema
 from .targets import dump_target, load_target, parse_target, resolve_target_path
 
 
 RESULT_ZERO = "0.000000"
+DEFAULT_PLAN_DEADLINE_SECONDS = 90
+DEFAULT_REPORT_DEADLINE_SECONDS = 120
 
 
 def run_validate(repo: Path, target_path: str | None, codex_bin: str | None, check_codex: bool) -> tuple[bool, list[str]]:
@@ -114,47 +117,140 @@ class Runner:
         done_when: str,
         target_name: str,
         target_path: Path,
+        deadline_seconds: int | None = None,
     ) -> Path:
         run_id = make_run_id(f"plan-{target_name}")
         paths = make_run_paths(self.repo_root, run_id)
-        prompt = build_plan_prompt(
+        deadline_seconds = deadline_seconds or DEFAULT_PLAN_DEADLINE_SECONDS
+        request_text = "\n".join(
+            [
+                f"goal: {goal}",
+                f"context: {context or '(none provided)'}",
+                f"constraints: {constraints or '(none provided)'}",
+                f"done_when: {done_when or '(none provided)'}",
+            ]
+        )
+        context_packet = build_context_workspace(
             repo_root=self.repo_root,
+            workspace=paths.context_dir,
+            artifacts_dir=paths.artifacts_dir,
+            workflow="plan",
+            request_text=request_text,
+        )
+        prompt = build_plan_prompt(
+            target_name=target_name,
             goal=goal,
             context=context,
             constraints=constraints,
             done_when=done_when,
-            target_name=target_name,
+            context_summary=context_packet.summary_text,
         )
         iteration_dir = paths.iterations_dir / "plan"
         iteration_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = iteration_dir / "prompt.md"
         final_file = iteration_dir / "codex-final.md"
         events_file = iteration_dir / "agent.jsonl"
+        schema_file = write_plan_output_schema(paths.schemas_dir / "plan-output.schema.json")
         prompt_file.write_text(prompt, encoding="utf-8")
+        engine = self._make_engine(
+            run_id=run_id,
+            workflow="plan",
+            target_path=target_path,
+            worktree_path=paths.context_dir,
+            resumable=False,
+            workspace_kind="context",
+            deadline_seconds=deadline_seconds,
+            prompt_bytes=len(prompt.encode("utf-8")),
+            context_bytes=context_packet.total_bytes,
+            selected_file_count=len(context_packet.selected_files),
+        )
+        write_engine(paths, engine)
         result = run_codex(
             codex_bin=self.codex_bin,
-            cwd=self.repo_root,
+            cwd=paths.context_dir,
             prompt=prompt,
             final_message_file=final_file,
             agent_jsonl_file=events_file,
             model=self.model,
             profile=self.profile,
             search=self.search,
+            deadline_seconds=deadline_seconds,
+            skip_git_repo_check=True,
+            output_schema_file=schema_file,
+            sandbox_mode="read-only",
         )
-        if result.exit_code != 0:
-            raise BlockedRunError(result.stderr.strip() or result.stdout.strip() or "Codex plan run failed")
-        yaml_block = extract_fenced_block(result.final_message, "yaml")
-        if not yaml_block:
-            raise ValidationError("plan output did not contain a fenced yaml block")
-        target = parse_target(json.loads(json.dumps(load_yaml_string(yaml_block))))
+        completion_mode = "model"
+        timed_out = result.timed_out
+        fallback_reason = self._codex_failure_reason(result, "Codex plan run failed")
+        try:
+            raw = json.loads(result.final_message)
+            if not isinstance(raw, dict):
+                raise ValidationError("plan output must be a JSON object")
+            target = parse_target(raw)
+        except Exception as exc:  # noqa: BLE001
+            fallback_reason = f"{fallback_reason}; fallback used because {exc}"
+            target = infer_fallback_target(
+                target_name=target_name,
+                goal=goal,
+                constraints=constraints,
+                context_packet=context_packet,
+            )
+            completion_mode = "fallback"
+            if target is None:
+                (paths.artifacts_dir / "fallback.md").write_text(
+                    self._render_plan_fallback_summary(
+                        target_path=target_path,
+                        goal=goal,
+                        context_packet=context_packet,
+                        reason=fallback_reason,
+                    ),
+                    encoding="utf-8",
+                )
+                engine = replace(
+                    engine,
+                    status="blocked",
+                    updated_at=iso_now(),
+                    duration_seconds=result.duration_seconds,
+                    timed_out=timed_out,
+                    completion_mode="fallback",
+                )
+                write_engine(paths, engine)
+                raise BlockedRunError(f"plan timed out or returned unusable output: {fallback_reason}")
+
         target.path = target_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_text(dump_target(target), encoding="utf-8")
+        fallback_block = ""
+        if completion_mode == "fallback":
+            fallback_text = self._render_plan_fallback_summary(
+                target_path=target_path,
+                goal=goal,
+                context_packet=context_packet,
+                reason=fallback_reason,
+            )
+            (paths.artifacts_dir / "fallback.md").write_text(fallback_text, encoding="utf-8")
+            fallback_block = f"- completion mode: fallback\n- fallback reason: {fallback_reason}\n"
         write_summary(
             paths,
-            f"# Plan summary\n\n- target: `{target_path.relative_to(self.repo_root)}`\n- goal: {target.goal}\n- verify: `{target.verify.command}`\n",
+            "# Plan summary\n\n"
+            f"- target: `{target_path.relative_to(self.repo_root)}`\n"
+            f"- goal: {target.goal}\n"
+            f"- verify: `{target.verify.command}`\n"
+            f"- deadline seconds: {deadline_seconds}\n"
+            f"- duration seconds: {result.duration_seconds:.2f}\n"
+            f"- prompt bytes: {len(prompt.encode('utf-8'))}\n"
+            f"- context bytes: {context_packet.total_bytes}\n"
+            f"- selected files: {len(context_packet.selected_files)}\n"
+            f"{fallback_block}",
         )
-        engine = self._make_engine(run_id=run_id, workflow="plan", target_path=target_path, worktree_path=self.repo_root, resumable=False)
+        engine = replace(
+            engine,
+            status="completed",
+            updated_at=iso_now(),
+            duration_seconds=result.duration_seconds,
+            timed_out=timed_out,
+            completion_mode=completion_mode,
+        )
         write_engine(paths, engine)
         return target_path
 
@@ -166,46 +262,124 @@ class Runner:
         artifact_name: str,
         allow_code_changes: bool = False,
         extra_artifacts: dict[str, str] | None = None,
+        deadline_seconds: int | None = None,
+        json_artifact_name: str | None = None,
+        secondary_markdown_name: str | None = None,
     ) -> RunPaths:
         run_id = make_run_id(f"{workflow}-{artifact_name}")
         paths = make_run_paths(self.repo_root, run_id)
-        worktree = ensure_worktree(self.repo_root, f"autoresearch/{workflow}/{run_id}", run_id)
-        engine = self._make_engine(run_id=run_id, workflow=workflow, target_path=None, worktree_path=worktree, resumable=False)
+        deadline_seconds = deadline_seconds or DEFAULT_REPORT_DEADLINE_SECONDS
+        execution_root = ensure_worktree(self.repo_root, f"autoresearch/{workflow}/{run_id}", run_id) if allow_code_changes else paths.context_dir
+        context_packet = build_context_workspace(
+            repo_root=self.repo_root,
+            workspace=paths.context_dir,
+            artifacts_dir=paths.artifacts_dir,
+            workflow=workflow,
+            request_text=request_summary,
+        )
+        engine = self._make_engine(
+            run_id=run_id,
+            workflow=workflow,
+            target_path=None,
+            worktree_path=execution_root,
+            resumable=False,
+            workspace_kind="worktree" if allow_code_changes else "context",
+            deadline_seconds=deadline_seconds,
+            prompt_bytes=0,
+            context_bytes=context_packet.total_bytes,
+            selected_file_count=len(context_packet.selected_files),
+        )
         write_engine(paths, engine)
 
         prompt = build_report_prompt(
-            repo_root=self.repo_root,
             workflow=workflow,
             request_summary=request_summary,
             allow_code_changes=allow_code_changes,
+            context_summary=context_packet.summary_text,
         )
         iteration_dir = paths.iterations_dir / "1"
         iteration_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = iteration_dir / "prompt.md"
         final_file = iteration_dir / "codex-final.md"
         events_file = iteration_dir / "agent.jsonl"
+        schema_file = write_report_output_schema(paths.schemas_dir / f"{workflow}-output.schema.json", workflow)
         prompt_file.write_text(prompt, encoding="utf-8")
+        engine = replace(engine, prompt_bytes=len(prompt.encode("utf-8")))
+        write_engine(paths, engine)
         result = run_codex(
             codex_bin=self.codex_bin,
-            cwd=worktree,
+            cwd=execution_root,
             prompt=prompt,
             final_message_file=final_file,
             agent_jsonl_file=events_file,
             model=self.model,
             profile=self.profile,
             search=self.search,
+            deadline_seconds=deadline_seconds,
+            skip_git_repo_check=not allow_code_changes,
+            output_schema_file=schema_file,
+            sandbox_mode="workspace-write" if allow_code_changes else "read-only",
         )
-        if result.exit_code != 0:
-            raise BlockedRunError(result.stderr.strip() or result.stdout.strip() or f"Codex {workflow} run failed")
+        fallback_reason = self._codex_failure_reason(result, f"Codex {workflow} run failed")
+        completion_mode = "model"
+        try:
+            report_data = json.loads(result.final_message)
+            self._validate_report_payload(workflow, report_data)
+        except Exception as exc:  # noqa: BLE001
+            completion_mode = "fallback"
+            fallback_reason = f"{fallback_reason}; fallback used because {exc}"
+            report_data = build_report_fallback(
+                workflow=workflow,
+                request_summary=request_summary,
+                context_packet=context_packet,
+                reason=fallback_reason,
+            )
         artifact = paths.artifacts_dir / artifact_name
-        artifact.write_text(result.final_message or "", encoding="utf-8")
+        artifact.write_text(self._render_report_markdown(report_data), encoding="utf-8")
+        if json_artifact_name:
+            (paths.artifacts_dir / json_artifact_name).write_text(json.dumps(report_data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if secondary_markdown_name:
+            secondary_content = report_data.get("summary", "")
+            if workflow == "ship":
+                secondary_parts: list[str] = []
+                if extra_artifacts and secondary_markdown_name in extra_artifacts:
+                    secondary_parts.append(extra_artifacts[secondary_markdown_name].rstrip())
+                secondary_parts.append(str(report_data.get("release_plan_markdown", secondary_content)).rstrip())
+                secondary_content = "\n\n".join(part for part in secondary_parts if part)
+            elif extra_artifacts and secondary_markdown_name in extra_artifacts:
+                secondary_content = extra_artifacts[secondary_markdown_name]
+            (paths.artifacts_dir / secondary_markdown_name).write_text(str(secondary_content).rstrip() + "\n", encoding="utf-8")
         if extra_artifacts:
             for relative_name, content in extra_artifacts.items():
+                if relative_name == secondary_markdown_name:
+                    continue
                 (paths.artifacts_dir / relative_name).write_text(content, encoding="utf-8")
-        summary = f"# {workflow} summary\n\n- run id: `{run_id}`\n- artifact: `{artifact.relative_to(paths.root)}`\n"
-        if changed_files(worktree):
+        summary = (
+            f"# {workflow} summary\n\n"
+            f"- run id: `{run_id}`\n"
+            f"- artifact: `{artifact.relative_to(paths.root)}`\n"
+            f"- deadline seconds: {deadline_seconds}\n"
+            f"- duration seconds: {result.duration_seconds:.2f}\n"
+            f"- prompt bytes: {len(prompt.encode('utf-8'))}\n"
+            f"- context bytes: {context_packet.total_bytes}\n"
+            f"- selected files: {len(context_packet.selected_files)}\n"
+            f"- completion mode: {completion_mode}\n"
+        )
+        if completion_mode == "fallback":
+            (paths.artifacts_dir / "fallback.md").write_text(self._render_report_markdown(report_data), encoding="utf-8")
+            summary += f"- fallback reason: {fallback_reason}\n"
+        if allow_code_changes and changed_files(execution_root):
             summary += "- warning: Codex modified files during a report-only workflow; inspect the worktree before trusting the output.\n"
         write_summary(paths, summary)
+        engine = replace(
+            engine,
+            status="completed",
+            updated_at=iso_now(),
+            duration_seconds=result.duration_seconds,
+            timed_out=result.timed_out,
+            completion_mode=completion_mode,
+        )
+        write_engine(paths, engine)
         return paths
 
     def run_iterative_workflow(
@@ -217,6 +391,7 @@ class Runner:
         max_iterations_override: int | None = None,
         unbounded: bool = False,
         findings_text: str | None = None,
+        deadline_seconds: int | None = None,
     ) -> RunPaths:
         run_id = run_id or make_run_id(f"{workflow}-{target.name}")
         paths = make_run_paths(self.repo_root, run_id)
@@ -225,6 +400,9 @@ class Runner:
         init_results(paths)
 
         engine = self._prepare_or_resume_engine(paths=paths, workflow=workflow, target=target, run_id=run_id)
+        if deadline_seconds is not None and engine.deadline_seconds != deadline_seconds:
+            engine = replace(engine, deadline_seconds=deadline_seconds, updated_at=iso_now())
+            write_engine(paths, engine)
         best_metric, baseline_metric, failure_count = self._ensure_baseline(paths=paths, target=target, engine=engine)
 
         max_iterations = max_iterations_override or target.stopping.max_iterations
@@ -244,7 +422,6 @@ class Runner:
             recent_results = format_recent_results(read_results(paths))
             context = self._iteration_context(paths, iteration)
             prompt = build_iteration_prompt(
-                repo_root=self.repo_root,
                 workflow=workflow,
                 target=target,
                 engine=engine,
@@ -265,6 +442,7 @@ class Runner:
                 model=self.model,
                 profile=self.profile,
                 search=self.search,
+                deadline_seconds=engine.deadline_seconds,
             )
             hypothesis = parse_hypothesis(result.final_message, f"{workflow} iteration {iteration}")
             files = changed_files(Path(engine.worktree_path))
@@ -370,6 +548,7 @@ class Runner:
         max_iterations_override: int | None,
         unbounded: bool,
         findings_text: str | None = None,
+        deadline_seconds: int | None = None,
     ) -> RunPaths:
         run_dir = self._resolve_run_dir(run_id)
         engine = load_engine(run_dir)
@@ -384,6 +563,7 @@ class Runner:
             max_iterations_override=max_iterations_override,
             unbounded=unbounded,
             findings_text=findings_text,
+            deadline_seconds=deadline_seconds,
         )
 
     def _prepare_or_resume_engine(self, *, paths: RunPaths, workflow: Workflow, target: TargetConfig, run_id: str) -> EngineState:
@@ -395,11 +575,30 @@ class Runner:
             return updated
         run_branch = f"autoresearch/{workflow}/{run_id}"
         worktree = ensure_worktree(self.repo_root, run_branch, run_id)
-        engine = self._make_engine(run_id=run_id, workflow=workflow, target_path=paths.target_file, worktree_path=worktree, resumable=True)
+        engine = self._make_engine(
+            run_id=run_id,
+            workflow=workflow,
+            target_path=paths.target_file,
+            worktree_path=worktree,
+            resumable=True,
+        )
         write_engine(paths, engine)
         return engine
 
-    def _make_engine(self, *, run_id: str, workflow: Workflow, target_path: Path | None, worktree_path: Path, resumable: bool) -> EngineState:
+    def _make_engine(
+        self,
+        *,
+        run_id: str,
+        workflow: Workflow,
+        target_path: Path | None,
+        worktree_path: Path,
+        resumable: bool,
+        workspace_kind: str = "worktree",
+        deadline_seconds: int | None = None,
+        prompt_bytes: int = 0,
+        context_bytes: int = 0,
+        selected_file_count: int = 0,
+    ) -> EngineState:
         warning = None
         if self.repo_state.dirty:
             warning = "source repository was dirty at run start; experiments use a dedicated worktree from HEAD and ignore uncommitted changes"
@@ -421,6 +620,11 @@ class Runner:
             updated_at=iso_now(),
             resumable=resumable,
             warning=warning,
+            workspace_kind=workspace_kind,
+            deadline_seconds=deadline_seconds,
+            prompt_bytes=prompt_bytes,
+            context_bytes=context_bytes,
+            selected_file_count=selected_file_count,
         )
 
     def _ensure_baseline(self, *, paths: RunPaths, target: TargetConfig, engine: EngineState) -> tuple[float, float, int]:
@@ -558,7 +762,20 @@ class Runner:
             f"- discarded experiments: {len(discarded)}",
             f"- guard stayed green: {'yes' if guard_green else 'no'}",
             f"- stop reason: {stop_reason}",
+            f"- workspace kind: {engine.workspace_kind}",
         ]
+        if engine.deadline_seconds is not None:
+            lines.append(f"- deadline seconds: {engine.deadline_seconds}")
+        if engine.duration_seconds is not None:
+            lines.append(f"- duration seconds: {engine.duration_seconds:.2f}")
+        if engine.prompt_bytes:
+            lines.append(f"- prompt bytes: {engine.prompt_bytes}")
+        if engine.context_bytes:
+            lines.append(f"- context bytes: {engine.context_bytes}")
+        if engine.selected_file_count:
+            lines.append(f"- selected files: {engine.selected_file_count}")
+        if engine.completion_mode != "model":
+            lines.append(f"- completion mode: {engine.completion_mode}")
         if engine.warning:
             lines.append(f"- warning: {engine.warning}")
         lines.extend(["", "## Next moves"])
@@ -568,11 +785,50 @@ class Runner:
             lines.append("- Revisit the target, verify command, or scope before continuing.")
         return "\n".join(lines)
 
+    def _codex_failure_reason(self, result: Any, default: str) -> str:
+        details = result.stderr.strip() or result.stdout.strip() or default
+        if result.timed_out:
+            return f"deadline exceeded after {result.duration_seconds:.2f}s"
+        return details
 
-def load_yaml_string(text: str) -> Any:
-    import yaml
+    def _render_plan_fallback_summary(
+        self,
+        *,
+        target_path: Path,
+        goal: str,
+        context_packet: ContextPacket,
+        reason: str,
+    ) -> str:
+        return (
+            "# Plan fallback\n\n"
+            f"- target: `{target_path.relative_to(self.repo_root)}`\n"
+            f"- goal: {goal}\n"
+            f"- reason: {reason}\n"
+            f"- candidate verify commands: {', '.join(context_packet.candidate_verify_commands) or '(none)'}\n"
+            f"- candidate scopes: {', '.join(context_packet.candidate_scope_globs) or '(none)'}\n"
+            f"- candidate metrics: {', '.join(item['name'] for item in context_packet.metric_candidates) or '(none)'}\n"
+        )
 
-    return yaml.safe_load(text)
+    def _render_report_markdown(self, report_data: dict[str, Any]) -> str:
+        if "checklist_markdown" in report_data:
+            markdown = str(report_data.get("checklist_markdown", "")).rstrip()
+            return markdown + "\n" if markdown else "# Ship report\n\n"
+        markdown = str(report_data.get("artifact_markdown", "")).rstrip()
+        if markdown:
+            return markdown + "\n"
+        lines = [f"# {report_data.get('title', 'Report')}", "", report_data.get("summary", "")]
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _validate_report_payload(self, workflow: Workflow, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            raise ValidationError("report output must be a JSON object")
+        if workflow == "ship":
+            required = ["title", "summary", "checklist_markdown", "release_plan_markdown"]
+        else:
+            required = ["title", "summary", "findings", "artifact_markdown"]
+        missing = [key for key in required if key not in payload]
+        if missing:
+            raise ValidationError(f"report output missing required keys: {', '.join(missing)}")
 
 
 def load_findings_text(repo_root: Path, explicit_path: str | None = None) -> str | None:

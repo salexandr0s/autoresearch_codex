@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 Decision = Literal["baseline", "keep", "discard", "crash", "inconclusive", "blocked"]
 Workflow = Literal["plan", "loop", "debug", "fix", "security", "ship"]
+CompletionMode = Literal["model", "fallback"]
 
 
 @dataclass(slots=True)
@@ -64,6 +65,8 @@ class BackendResult:
     stderr: str
     final_message: str
     command: list[str]
+    duration_seconds: float
+    timed_out: bool = False
 
 
 @dataclass(slots=True)
@@ -71,6 +74,8 @@ class RunPaths:
     root: Path
     iterations_dir: Path
     artifacts_dir: Path
+    context_dir: Path
+    schemas_dir: Path
     target_file: Path
     baseline_file: Path
     results_file: Path
@@ -109,6 +114,14 @@ class EngineState:
     best_iteration: int | None = None
     baseline_metric: float | None = None
     warning: str | None = None
+    workspace_kind: str = "worktree"
+    deadline_seconds: int | None = None
+    duration_seconds: float | None = None
+    timed_out: bool = False
+    completion_mode: CompletionMode = "model"
+    prompt_bytes: int = 0
+    context_bytes: int = 0
+    selected_file_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

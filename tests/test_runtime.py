@@ -19,6 +19,7 @@ def write_fake_codex(bin_path: Path, queue_path: Path) -> None:
         "#!/usr/bin/env python3\n"
         "import json\n"
         "import os\n"
+        "import time\n"
         "import sys\n"
         "from pathlib import Path\n\n"
         "args = sys.argv[1:]\n"
@@ -34,6 +35,7 @@ def write_fake_codex(bin_path: Path, queue_path: Path) -> None:
         "    raise SystemExit(1)\n"
         "call = payload['calls'].pop(0)\n"
         "queue_path.write_text(json.dumps(payload, indent=2), encoding='utf-8')\n"
+        "time.sleep(call.get('sleep_seconds', 0))\n"
         "for item in call.get('writes', []):\n"
         "    target = cwd / item['path']\n"
         "    target.parent.mkdir(parents=True, exist_ok=True)\n"
@@ -111,31 +113,34 @@ class RuntimeIntegrationTests(unittest.TestCase):
             {
                 "final": textwrap.dedent(
                     """
-                    ```yaml
-                    name: generated
-                    goal: Improve the fixture
-                    scope:
-                      include:
-                        - src/**
-                      exclude: []
-                    metric:
-                      name: score
-                      direction: higher
-                      extractor:
-                        type: regex
-                        value: 'score: ([0-9.]+)'
-                    verify:
-                      command: python3 score.py
-                    guard:
-                      command: python3 -m py_compile score.py
-                    stopping:
-                      max_iterations: 3
-                      goal_threshold: 3
-                      stagnation_reflect_after: 2
-                      stop_after_consecutive_failures: 3
-                    ```
-                    Hypothesis: generate target
-                    Summary: generated target
+                    {
+                      "name": "generated",
+                      "goal": "Improve the fixture",
+                      "scope": {
+                        "include": ["src/**"],
+                        "exclude": []
+                      },
+                      "metric": {
+                        "name": "score",
+                        "direction": "higher",
+                        "extractor": {
+                          "type": "regex",
+                          "value": "score: ([0-9.]+)"
+                        }
+                      },
+                      "verify": {
+                        "command": "python3 score.py"
+                      },
+                      "guard": {
+                        "command": "python3 -m py_compile score.py"
+                      },
+                      "stopping": {
+                        "max_iterations": 3,
+                        "goal_threshold": 3,
+                        "stagnation_reflect_after": 2,
+                        "stop_after_consecutive_failures": 3
+                      }
+                    }
                     """
                 ).strip()
             }
@@ -144,6 +149,24 @@ class RuntimeIntegrationTests(unittest.TestCase):
         target_path = Path(proc.stdout.strip())
         self.assertTrue(target_path.exists())
         self.assertIn("metric:", target_path.read_text(encoding="utf-8"))
+
+    def test_plan_timeout_uses_fallback_target(self) -> None:
+        self._init_git()
+        (self.repo / "tests").mkdir(parents=True, exist_ok=True)
+        (self.repo / "tests" / "test_sample.py").write_text(
+            "import unittest\n\nclass SampleTests(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        self._commit_all("baseline")
+        self._set_queue([{"sleep_seconds": 2, "final": "{}"}])
+        proc = self._cli("plan", "--goal", "Increase regression coverage", "--target-name", "fallback", "--deadline-seconds", "1")
+        target_path = Path(proc.stdout.strip())
+        self.assertTrue(target_path.exists())
+        text = target_path.read_text(encoding="utf-8")
+        self.assertIn("test_count", text)
+        run_dir = sorted((self.repo / ".autoresearch" / "runs").iterdir())[-1]
+        summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertIn("completion mode: fallback", summary)
 
     def test_scaffold_validator_passes_in_target_repo_mode(self) -> None:
         self._init_git()
@@ -269,7 +292,23 @@ class RuntimeIntegrationTests(unittest.TestCase):
         ]:
             with self.subTest(command=command):
                 self._set_queue([
-                    {"final": f"Hypothesis: report for {command}\nSummary: generated {command} artifact\n"}
+                    {
+                        "final": json.dumps(
+                            {
+                                "title": "ship report",
+                                "summary": "generated ship artifact",
+                                "checklist_markdown": "# ship\n\ngenerated ship artifact\n",
+                                "release_plan_markdown": "generated ship release plan\n",
+                            }
+                            if command == "ship"
+                            else {
+                                "title": f"{command} report",
+                                "summary": f"generated {command} artifact",
+                                "findings": [],
+                                "artifact_markdown": f"# {command}\n\ngenerated {command} artifact\n",
+                            }
+                        )
+                    }
                 ])
                 args = [command]
                 if command == "debug":
@@ -278,12 +317,33 @@ class RuntimeIntegrationTests(unittest.TestCase):
                 run_dir = Path(proc.stdout.strip())
                 self.assertTrue((run_dir / "artifacts" / artifact).exists())
 
+    def test_debug_timeout_uses_structured_fallback(self) -> None:
+        self._init_git()
+        (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        self._commit_all("baseline")
+        self._set_queue([{"sleep_seconds": 2, "final": "{}"}])
+        proc = self._cli("debug", "--summary", "Investigate the fixture", "--deadline-seconds", "1")
+        run_dir = Path(proc.stdout.strip())
+        summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+        artifact = (run_dir / "artifacts" / "findings.md").read_text(encoding="utf-8")
+        self.assertIn("completion mode: fallback", summary)
+        self.assertIn("fallback", artifact.lower())
+
     def test_ship_execute_stays_dry_run_only(self) -> None:
         self._init_git()
         (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
         self._commit_all("baseline")
         self._set_queue([
-            {"final": "Hypothesis: prepare a dry-run ship plan\nSummary: generated ship checklist only\n"}
+            {
+                "final": json.dumps(
+                    {
+                        "title": "ship report",
+                        "summary": "generated ship checklist only",
+                        "checklist_markdown": "# ship\n\ngenerated ship checklist only\n",
+                        "release_plan_markdown": "generated ship checklist only\n",
+                    }
+                )
+            }
         ])
 
         proc = self._cli("ship", "--summary", "Deploy the fixture", "--execute")

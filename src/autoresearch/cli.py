@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = subparsers.add_parser("plan", help="Generate a target file with Codex")
     add_common_runtime_args(plan)
+    add_codex_execution_args(plan)
     plan.add_argument("--goal", required=True)
     plan.add_argument("--context", default="")
     plan.add_argument("--constraints", default="")
@@ -31,19 +32,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     loop = subparsers.add_parser("loop", help="Run the experiment loop")
     add_common_runtime_args(loop)
+    add_codex_execution_args(loop)
     add_iterative_args(loop)
 
     debug = subparsers.add_parser("debug", help="Run a debug investigation")
     add_common_runtime_args(debug)
+    add_codex_execution_args(debug)
     debug.add_argument("--summary", required=True, help="Problem statement or investigation request")
 
     fix = subparsers.add_parser("fix", help="Run a fix loop")
     add_common_runtime_args(fix)
+    add_codex_execution_args(fix)
     add_iterative_args(fix)
     fix.add_argument("--findings-file", help="Optional findings artifact to use as context")
 
     security = subparsers.add_parser("security", help="Run a security review")
     add_common_runtime_args(security)
+    add_codex_execution_args(security)
     security.add_argument("--summary", default="Perform a security review of the repository")
     security.add_argument("--remediate", action="store_true", help="Use the loop engine to attempt remediations")
     security.add_argument("--target", help="Target file for remediation mode")
@@ -52,11 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     ship = subparsers.add_parser("ship", help="Generate a ship checklist or dry-run plan")
     add_common_runtime_args(ship)
+    add_codex_execution_args(ship)
     ship.add_argument("--summary", default="Prepare a release or deployment checklist")
     ship.add_argument("--execute", action="store_true", help="Request execute mode; the runner will refuse unattended side effects")
 
     resume = subparsers.add_parser("resume", help="Resume the latest or a named iterative run")
     add_common_runtime_args(resume)
+    add_codex_execution_args(resume)
     resume.add_argument("--run-id", help="Run id to resume; defaults to the latest run")
     resume.add_argument("--max-iterations", type=int)
     resume.add_argument("--unbounded", action="store_true")
@@ -71,6 +78,10 @@ def add_common_runtime_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", help="Optional Codex model override")
     parser.add_argument("--profile", help="Optional Codex profile")
     parser.add_argument("--search", action="store_true", help="Enable Codex web search")
+
+
+def add_codex_execution_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--deadline-seconds", type=int, help="Optional deadline for a Codex-backed workflow run")
 
 
 def add_iterative_args(parser: argparse.ArgumentParser) -> None:
@@ -104,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
                 done_when=args.done_when,
                 target_name=args.target_name,
                 target_path=target_path,
+                deadline_seconds=args.deadline_seconds,
             )
             print(str(written))
             return 0
@@ -116,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_id=args.run_id,
                 max_iterations_override=args.max_iterations,
                 unbounded=args.unbounded,
+                deadline_seconds=args.deadline_seconds,
             )
             print(str(paths.root))
             return 0
@@ -130,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations_override=args.max_iterations,
                 unbounded=args.unbounded,
                 findings_text=findings,
+                deadline_seconds=args.deadline_seconds,
             )
             print(str(paths.root))
             return 0
@@ -139,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
                 workflow="debug",
                 request_summary=args.summary,
                 artifact_name="findings.md",
-                extra_artifacts={"findings.json": json.dumps({"summary": args.summary}, indent=2) + "\n"},
+                json_artifact_name="findings.json",
+                deadline_seconds=args.deadline_seconds,
             )
             print(str(paths.root))
             return 0
@@ -152,13 +167,15 @@ def main(argv: list[str] | None = None) -> int:
                     target=target,
                     max_iterations_override=args.max_iterations,
                     unbounded=args.unbounded,
+                    deadline_seconds=args.deadline_seconds,
                 )
             else:
                 paths = runner.run_report_workflow(
                     workflow="security",
                     request_summary=args.summary,
                     artifact_name="security-report.md",
-                    extra_artifacts={"security-findings.json": json.dumps({"summary": args.summary}, indent=2) + "\n"},
+                    json_artifact_name="security-findings.json",
+                    deadline_seconds=args.deadline_seconds,
                 )
             print(str(paths.root))
             return 0
@@ -172,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
                 request_summary=summary,
                 artifact_name="ship-checklist.md",
                 extra_artifacts={"release-plan.md": summary + "\n"},
+                secondary_markdown_name="release-plan.md",
+                deadline_seconds=args.deadline_seconds,
             )
             print(str(paths.root))
             return 0
@@ -183,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations_override=args.max_iterations,
                 unbounded=args.unbounded,
                 findings_text=findings,
+                deadline_seconds=args.deadline_seconds,
             )
             print(str(paths.root))
             return 0

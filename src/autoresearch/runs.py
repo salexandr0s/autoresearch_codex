@@ -28,13 +28,19 @@ def make_run_paths(repo_root: Path, run_id: str) -> RunPaths:
     root = repo_root / ".autoresearch" / "runs" / run_id
     iterations = root / "iterations"
     artifacts = root / "artifacts"
+    context = root / "context"
+    schemas = root / "schemas"
     root.mkdir(parents=True, exist_ok=True)
     iterations.mkdir(parents=True, exist_ok=True)
     artifacts.mkdir(parents=True, exist_ok=True)
+    context.mkdir(parents=True, exist_ok=True)
+    schemas.mkdir(parents=True, exist_ok=True)
     return RunPaths(
         root=root,
         iterations_dir=iterations,
         artifacts_dir=artifacts,
+        context_dir=context,
+        schemas_dir=schemas,
         target_file=root / "target.yaml",
         baseline_file=root / "baseline.json",
         results_file=root / "results.tsv",

@@ -93,7 +93,7 @@ def validate_target_file(path: Path) -> None:
     else:
         if not re.search(r"^  include:\s*$", scope_block, re.M):
             fail(f"{rel(path)}: missing scope.include")
-        if not re.search(r"^    -\s+.+$", scope_block, re.M):
+        if not re.search(r"^ {2,4}-\s+.+$", scope_block, re.M):
             fail(f"{rel(path)}: scope.include must contain at least one glob")
 
     metric_block = extract_yaml_block(text, "metric")
