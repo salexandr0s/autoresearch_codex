@@ -6,6 +6,7 @@ from .models import EngineState, TargetConfig, Workflow
 WORKFLOW_LABELS: dict[Workflow, str] = {
     "plan": "target-planning",
     "loop": "improvement-loop",
+    "skill-optimize": "skill-optimization-loop",
     "debug": "repo-investigation",
     "fix": "error-reduction-loop",
     "security": "risk-review",
@@ -33,6 +34,15 @@ ITERATION CONTRACT
 - End your final message with:
   Hypothesis: <one-line hypothesis>
   Summary: <short summary>
+""".strip()
+
+
+SKILL_OPTIMIZE_BRIEF = """
+SKILL OPTIMIZE CONTRACT
+- The primary target is a SKILL.md workflow, not the autoresearch runtime.
+- Preserve valid frontmatter and markdown structure.
+- Prefer one focused instruction change over broad rewrites.
+- Touch references/examples only if they are explicitly in scope and required by the same hypothesis.
 """.strip()
 
 
@@ -85,9 +95,10 @@ SHIP CONTRACT
 - Return the final JSON immediately once you have enough information.
 - Return JSON matching the provided schema.
 - Keep the answer concise: a short checklist and a short release plan only.
-""".strip(),
+    """.strip(),
     "plan": PLAN_BRIEF,
     "loop": ITERATION_BRIEF,
+    "skill-optimize": ITERATION_BRIEF,
     "fix": ITERATION_BRIEF,
 }
 
@@ -109,6 +120,7 @@ def build_iteration_prompt(
         if reflection_mode
         else "Reflection mode is OFF."
     )
+    workflow_brief = f"\n\n{SKILL_OPTIMIZE_BRIEF}" if workflow == "skill-optimize" else ""
     findings_section = f"\nRelevant findings:\n{findings_text.strip()}\n" if findings_text else ""
     return f"""
 WORKFLOW: {workflow}
@@ -132,6 +144,7 @@ Recent results:
 {DOCTRINE_DIGEST}
 
 {ITERATION_BRIEF}
+{workflow_brief}
 """.strip() + "\n"
 
 

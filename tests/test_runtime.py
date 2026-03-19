@@ -105,6 +105,58 @@ class RuntimeIntegrationTests(unittest.TestCase):
     def _set_queue(self, calls: list[dict]) -> None:
         self.queue_path.write_text(json.dumps({"calls": calls}, indent=2), encoding="utf-8")
 
+    def _write_skill_optimize_fixture(self) -> tuple[Path, Path, Path]:
+        skill_dir = self.repo / ".agents" / "skills" / "palette"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            textwrap.dedent(
+                """
+                ---
+                name: palette-skill
+                description: Generate a short palette recommendation.
+                ---
+
+                # palette-skill
+
+                Prefer bright neon colors.
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        inputs_file = self.repo / "skill-inputs.yaml"
+        inputs_file.write_text(
+            textwrap.dedent(
+                """
+                runs:
+                  - id: palette
+                    prompt: "Suggest colors for a landing page hero."
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        evals_file = self.repo / "skill-evals.yaml"
+        evals_file.write_text(
+            textwrap.dedent(
+                """
+                evals:
+                  - id: pastel_only
+                    question: "Does the answer use pastel colors only?"
+                    pass_condition: "Only soft pastel colors are used."
+                    fail_condition: "Any bright, neon, or highly saturated colors appear."
+                  - id: no_numbers
+                    question: "Does the answer avoid numbered steps?"
+                    pass_condition: "No numeric ordering markers appear."
+                    fail_condition: "Contains 1, 2, 3, first, second, or similar ordering."
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        return skill_path, inputs_file, evals_file
+
     def test_plan_generates_target(self) -> None:
         self._init_git()
         (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
@@ -307,6 +359,334 @@ class RuntimeIntegrationTests(unittest.TestCase):
         run_dir = Path(proc.stdout.strip())
         summary = (run_dir / "summary.md").read_text(encoding="utf-8")
         self.assertIn("best metric: 0.000000", summary)
+
+    def test_skill_optimize_keeps_improvement_and_discards_regression(self) -> None:
+        self._init_git()
+        skill_path, inputs_file, evals_file = self._write_skill_optimize_fixture()
+        self._commit_all("baseline")
+        self._set_queue(
+            [
+                {"final": "Use neon pink and bright orange.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": False, "reason": "uses neon colors"},
+                                {"id": "no_numbers", "passed": False, "reason": "contains ordered steps"},
+                            ]
+                        }
+                    )
+                },
+                {
+                    "writes": [
+                        {
+                            "path": ".agents/skills/palette/SKILL.md",
+                            "content": textwrap.dedent(
+                                """
+                                ---
+                                name: palette-skill
+                                description: Generate a short palette recommendation.
+                                ---
+
+                                # palette-skill
+
+                                Use only soft pastel colors.
+                                """
+                            ).strip()
+                            + "\n",
+                        }
+                    ],
+                    "final": "Hypothesis: tighten the pastel requirement\nSummary: forbid neon palette suggestions\n",
+                },
+                {"final": "Use soft pastel blue and pastel peach in a single short note.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": True, "reason": "pastel colors only"},
+                                {"id": "no_numbers", "passed": False, "reason": "mentions first and second choices"},
+                            ]
+                        }
+                    )
+                },
+                {
+                    "writes": [
+                        {
+                            "path": ".agents/skills/palette/SKILL.md",
+                            "content": textwrap.dedent(
+                                """
+                                ---
+                                name: palette-skill
+                                description: Generate a short palette recommendation.
+                                ---
+
+                                # palette-skill
+
+                                Prefer bright neon colors again.
+                                """
+                            ).strip()
+                            + "\n",
+                        }
+                    ],
+                    "final": "Hypothesis: reintroduce brighter palette language\nSummary: bring back neon color guidance\n",
+                },
+                {"final": "Use neon orange and electric green.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": False, "reason": "uses neon colors"},
+                                {"id": "no_numbers", "passed": False, "reason": "contains ordered steps"},
+                            ]
+                        }
+                    )
+                },
+            ]
+        )
+
+        proc = self._cli(
+            "skill-optimize",
+            "--skill",
+            str(skill_path.relative_to(self.repo)),
+            "--inputs-file",
+            str(inputs_file.relative_to(self.repo)),
+            "--evals-file",
+            str(evals_file.relative_to(self.repo)),
+            "--runs-per-experiment",
+            "1",
+            "--max-iterations",
+            "2",
+        )
+
+        run_dir = Path(proc.stdout.strip())
+        self.assertTrue((self.repo / ".autoresearch" / "targets" / "palette-skill-optimize.yaml").exists())
+        results = (run_dir / "results.tsv").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(results), 4)
+        self.assertIn("\tkeep\t", results[2])
+        self.assertIn("\tdiscard\t", results[3])
+        self.assertTrue((run_dir / "artifacts" / "baseline" / "score.json").exists())
+        self.assertTrue((run_dir / "iterations" / "1" / "verify-artifacts" / "score.json").exists())
+        self.assertTrue((run_dir / "artifacts" / "changelog.md").exists())
+        self.assertTrue((run_dir / "artifacts" / "score-summary.json").exists())
+
+    def test_skill_optimize_marks_ambiguous_verify_inconclusive(self) -> None:
+        self._init_git()
+        skill_path, inputs_file, evals_file = self._write_skill_optimize_fixture()
+        self._commit_all("baseline")
+        self._set_queue(
+            [
+                {"final": "Use neon pink.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": False, "reason": "uses neon colors"},
+                                {"id": "no_numbers", "passed": False, "reason": "contains ordered steps"},
+                            ]
+                        }
+                    )
+                },
+                {
+                    "writes": [
+                        {
+                            "path": ".agents/skills/palette/SKILL.md",
+                            "content": textwrap.dedent(
+                                """
+                                ---
+                                name: palette-skill
+                                description: Generate a short palette recommendation.
+                                ---
+
+                                # palette-skill
+
+                                Prefer soft colors, but keep the wording loose.
+                                """
+                            ).strip()
+                            + "\n",
+                        }
+                    ],
+                    "final": "Hypothesis: clarify the palette rule\nSummary: small wording tweak\n",
+                },
+                {"final": "Use a mixed palette.\n"},
+                {"final": "not-json"},
+            ]
+        )
+
+        proc = self._cli(
+            "skill-optimize",
+            "--skill",
+            str(skill_path.relative_to(self.repo)),
+            "--inputs-file",
+            str(inputs_file.relative_to(self.repo)),
+            "--evals-file",
+            str(evals_file.relative_to(self.repo)),
+            "--runs-per-experiment",
+            "1",
+            "--max-iterations",
+            "1",
+        )
+
+        run_dir = Path(proc.stdout.strip())
+        results = (run_dir / "results.tsv").read_text(encoding="utf-8").splitlines()
+        self.assertIn("\tinconclusive\t", results[2])
+        self.assertIn("verify_ambiguous", results[2])
+
+    def test_skill_optimize_discards_out_of_scope_changes(self) -> None:
+        self._init_git()
+        skill_path, inputs_file, evals_file = self._write_skill_optimize_fixture()
+        self._commit_all("baseline")
+        self._set_queue(
+            [
+                {"final": "Use neon pink.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": False, "reason": "uses neon colors"},
+                                {"id": "no_numbers", "passed": False, "reason": "contains ordered steps"},
+                            ]
+                        }
+                    )
+                },
+                {
+                    "writes": [{"path": "README.md", "content": "out of scope change\n"}],
+                    "final": "Hypothesis: edit the README instead\nSummary: unrelated change\n",
+                },
+            ]
+        )
+
+        proc = self._cli(
+            "skill-optimize",
+            "--skill",
+            str(skill_path.relative_to(self.repo)),
+            "--inputs-file",
+            str(inputs_file.relative_to(self.repo)),
+            "--evals-file",
+            str(evals_file.relative_to(self.repo)),
+            "--runs-per-experiment",
+            "1",
+            "--max-iterations",
+            "1",
+        )
+
+        run_dir = Path(proc.stdout.strip())
+        results = (run_dir / "results.tsv").read_text(encoding="utf-8").splitlines()
+        self.assertIn("\tdiscard\t", results[2])
+        self.assertIn("out_of_scope_changes", results[2])
+
+    def test_skill_optimize_resume_continues_existing_run(self) -> None:
+        self._init_git()
+        skill_path, inputs_file, evals_file = self._write_skill_optimize_fixture()
+        self._commit_all("baseline")
+        self._set_queue(
+            [
+                {"final": "Use neon pink and bright orange.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": False, "reason": "uses neon colors"},
+                                {"id": "no_numbers", "passed": False, "reason": "contains ordered steps"},
+                            ]
+                        }
+                    )
+                },
+                {
+                    "writes": [
+                        {
+                            "path": ".agents/skills/palette/SKILL.md",
+                            "content": textwrap.dedent(
+                                """
+                                ---
+                                name: palette-skill
+                                description: Generate a short palette recommendation.
+                                ---
+
+                                # palette-skill
+
+                                Use only soft pastel colors, but keep numbered options if helpful.
+                                """
+                            ).strip()
+                            + "\n",
+                        }
+                    ],
+                    "final": "Hypothesis: improve the color rule first\nSummary: remove neon guidance\n",
+                },
+                {"final": "Use soft pastel blue as the first choice.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": True, "reason": "pastel colors only"},
+                                {"id": "no_numbers", "passed": False, "reason": "contains first choice wording"},
+                            ]
+                        }
+                    )
+                },
+            ]
+        )
+
+        first = self._cli(
+            "skill-optimize",
+            "--skill",
+            str(skill_path.relative_to(self.repo)),
+            "--inputs-file",
+            str(inputs_file.relative_to(self.repo)),
+            "--evals-file",
+            str(evals_file.relative_to(self.repo)),
+            "--runs-per-experiment",
+            "1",
+            "--max-iterations",
+            "1",
+        )
+
+        run_dir = Path(first.stdout.strip())
+        self._set_queue(
+            [
+                {
+                    "writes": [
+                        {
+                            "path": ".agents/skills/palette/SKILL.md",
+                            "content": textwrap.dedent(
+                                """
+                                ---
+                                name: palette-skill
+                                description: Generate a short palette recommendation.
+                                ---
+
+                                # palette-skill
+
+                                Use only soft pastel colors and avoid numbered or ordered wording.
+                                """
+                            ).strip()
+                            + "\n",
+                        }
+                    ],
+                    "final": "Hypothesis: remove ordered wording too\nSummary: avoid numbered phrasing in the response\n",
+                },
+                {"final": "Use soft pastel blue and pastel peach in one short note.\n"},
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": True, "reason": "pastel colors only"},
+                                {"id": "no_numbers", "passed": True, "reason": "no numeric ordering markers"},
+                            ]
+                        }
+                    )
+                },
+            ]
+        )
+
+        resumed = self._cli("resume", "--run-id", run_dir.name, "--max-iterations", "2")
+
+        resumed_dir = Path(resumed.stdout.strip())
+        results = (resumed_dir / "results.tsv").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(results), 4)
+        self.assertIn("\tkeep\t", results[2])
+        self.assertIn("\tkeep\t", results[3])
+        summary = (resumed_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertIn("best metric: 1.000000", summary)
 
     def test_debug_security_and_ship_create_artifacts(self) -> None:
         self._init_git()

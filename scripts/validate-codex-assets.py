@@ -13,6 +13,7 @@ REQUIRED_SKILLS = {
     "autoresearch-fix",
     "autoresearch-security",
     "autoresearch-ship",
+    "autoresearch-skill-optimize",
 }
 TEXT_SUFFIXES = {".md", ".toml", ".yaml", ".yml", ".json", ".rules", ".py", ".sh"}
 FORBIDDEN_STRINGS = [

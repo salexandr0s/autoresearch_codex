@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -54,6 +55,7 @@ from .runs import (
     read_results,
 )
 from .schemas import write_plan_output_schema, write_report_output_schema
+from .skillopt import build_skill_optimize_target, load_skill_optimize_request
 from .targets import dump_target, load_target, parse_target, resolve_target_path
 
 
@@ -404,6 +406,40 @@ class Runner:
         write_engine(paths, engine)
         return paths
 
+    def run_skill_optimize(
+        self,
+        *,
+        skill: str,
+        inputs_file: str,
+        evals_file: str,
+        runs_per_experiment: int,
+        references: str | None,
+        target_name: str | None,
+        target_path: Path | None,
+        max_iterations: int | None,
+        unbounded: bool,
+        deadline_seconds: int | None = None,
+    ) -> RunPaths:
+        request = load_skill_optimize_request(
+            repo_root=self.repo_root,
+            skill=skill,
+            inputs_file=inputs_file,
+            evals_file=evals_file,
+            runs_per_experiment=runs_per_experiment,
+            target_name=target_name,
+            target_path=target_path,
+            references=references,
+        )
+        target = build_skill_optimize_target(request, max_iterations=max_iterations)
+        request.target_path.parent.mkdir(parents=True, exist_ok=True)
+        request.target_path.write_text(dump_target(target), encoding="utf-8")
+        return self.run_iterative_workflow(
+            workflow="skill-optimize",
+            target=target,
+            unbounded=unbounded,
+            deadline_seconds=deadline_seconds,
+        )
+
     def run_iterative_workflow(
         self,
         *,
@@ -489,11 +525,21 @@ class Runner:
                     reason = "out_of_scope_changes"
                     revert_commit = revert_head(Path(engine.worktree_path))
                 else:
-                    verify_proc, verify_text = self._run_command(target.verify.command, Path(engine.worktree_path), context["verify_log"])
+                    verify_proc, verify_text = self._run_command(
+                        target.verify.command,
+                        Path(engine.worktree_path),
+                        context["verify_log"],
+                        artifact_dir=context["verify_artifacts"],
+                        workflow=workflow,
+                    )
                     verify_status = f"exit:{verify_proc.returncode}"
                     if verify_proc.returncode != 0:
-                        decision = "crash"
-                        reason = "verify_failed"
+                        if "ambiguous_verify:" in verify_text:
+                            decision = "inconclusive"
+                            reason = "verify_ambiguous"
+                        else:
+                            decision = "crash"
+                            reason = "verify_failed"
                         revert_commit = revert_head(Path(engine.worktree_path))
                     else:
                         try:
@@ -504,7 +550,13 @@ class Runner:
                             revert_commit = revert_head(Path(engine.worktree_path))
                         else:
                             if target.guard:
-                                guard_proc, _guard_text = self._run_command(target.guard.command, Path(engine.worktree_path), context["guard_log"])
+                                guard_proc, _guard_text = self._run_command(
+                                    target.guard.command,
+                                    Path(engine.worktree_path),
+                                    context["guard_log"],
+                                    artifact_dir=context["verify_artifacts"],
+                                    workflow=workflow,
+                                )
                                 guard_status = f"exit:{guard_proc.returncode}"
                                 if guard_proc.returncode != 0:
                                     decision = "discard"
@@ -561,6 +613,15 @@ class Runner:
         engine = replace(engine, status="completed", updated_at=iso_now(), best_metric=best_metric, baseline_metric=baseline_metric)
         write_engine(paths, engine)
         write_summary(paths, self._build_summary(target=target, rows=rows, baseline_metric=baseline_metric, best_metric=best_metric, stop_reason=stop_reason, engine=engine))
+        if workflow == "skill-optimize":
+            self._write_skill_optimize_artifacts(
+                paths=paths,
+                target=target,
+                rows=rows,
+                baseline_metric=baseline_metric,
+                best_metric=best_metric,
+                stop_reason=stop_reason,
+            )
         return paths
 
     def resume_iterative_workflow(
@@ -663,13 +724,25 @@ class Runner:
 
         baseline_verify = paths.artifacts_dir / "baseline-verify.log"
         baseline_guard = paths.artifacts_dir / "baseline-guard.log"
-        verify_proc, verify_text = self._run_command(target.verify.command, Path(engine.worktree_path), baseline_verify)
+        verify_proc, verify_text = self._run_command(
+            target.verify.command,
+            Path(engine.worktree_path),
+            baseline_verify,
+            artifact_dir=paths.artifacts_dir / "baseline",
+            workflow=engine.workflow,
+        )
         if verify_proc.returncode != 0:
             raise BlockedRunError(f"baseline verify failed: {baseline_verify}")
         baseline_metric = extract_metric(target.metric.extractor, verify_text, Path(engine.worktree_path), baseline_verify)
         guard_status = "not-configured"
         if target.guard:
-            guard_proc, _ = self._run_command(target.guard.command, Path(engine.worktree_path), baseline_guard)
+            guard_proc, _ = self._run_command(
+                target.guard.command,
+                Path(engine.worktree_path),
+                baseline_guard,
+                artifact_dir=paths.artifacts_dir / "baseline",
+                workflow=engine.workflow,
+            )
             if guard_proc.returncode != 0:
                 raise BlockedRunError(f"baseline guard failed: {baseline_guard}")
             guard_status = f"exit:{guard_proc.returncode}"
@@ -712,8 +785,28 @@ class Runner:
         write_engine(paths, updated)
         return baseline_metric, baseline_metric, 0
 
-    def _run_command(self, command: str, cwd: Path, log_path: Path) -> tuple[subprocess.CompletedProcess[str], str]:
-        proc = subprocess.run(["/bin/zsh", "-lc", command], cwd=str(cwd), text=True, capture_output=True, check=False)
+    def _run_command(
+        self,
+        command: str,
+        cwd: Path,
+        log_path: Path,
+        *,
+        artifact_dir: Path | None = None,
+        workflow: Workflow | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        env = os.environ.copy()
+        env["AUTORESEARCH_CODEX_BIN"] = self.codex_bin
+        env["AUTORESEARCH_PYTHON_BIN"] = sys.executable
+        env["AUTORESEARCH_MODEL"] = self.model or ""
+        env["AUTORESEARCH_PROFILE"] = self.profile or ""
+        env["AUTORESEARCH_SEARCH"] = "1" if self.search else "0"
+        env["AUTORESEARCH_TARGET_REPO"] = str(self.repo_root)
+        if workflow:
+            env["AUTORESEARCH_WORKFLOW"] = workflow
+        if artifact_dir is not None:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            env["AUTORESEARCH_VERIFY_ARTIFACT_DIR"] = str(artifact_dir)
+        proc = subprocess.run(["/bin/zsh", "-lc", command], cwd=str(cwd), text=True, capture_output=True, check=False, env=env)
         combined = (proc.stdout or "") + (proc.stderr or "")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(combined, encoding="utf-8")
@@ -746,6 +839,7 @@ class Runner:
             "prompt": directory / "prompt.md",
             "final": directory / "codex-final.md",
             "verify_log": directory / "verify.log",
+            "verify_artifacts": directory / "verify-artifacts",
             "guard_log": directory / "guard.log",
             "events": directory / "agent.jsonl",
         }
@@ -806,6 +900,51 @@ class Runner:
         else:
             lines.append("- Revisit the target, verify command, or scope before continuing.")
         return "\n".join(lines)
+
+    def _write_skill_optimize_artifacts(
+        self,
+        *,
+        paths: RunPaths,
+        target: TargetConfig,
+        rows: list[dict[str, str]],
+        baseline_metric: float,
+        best_metric: float,
+        stop_reason: str,
+    ) -> None:
+        changelog_lines = [
+            "# skill-optimize changelog",
+            "",
+            f"- target: {target.name}",
+            f"- metric: {target.metric.name}",
+            f"- baseline metric: {baseline_metric:.6f}",
+            f"- best metric: {best_metric:.6f}",
+            "",
+            "## Iterations",
+        ]
+        for row in rows:
+            iteration = row.get("iteration", "")
+            decision = row.get("decision", "")
+            hypothesis = row.get("hypothesis", "")
+            reason = row.get("decision_reason", "")
+            metric = row.get("metric", "")
+            if iteration == "0":
+                changelog_lines.append(f"- baseline: metric {metric}")
+                continue
+            changelog_lines.append(f"- iteration {iteration}: {decision} | metric {metric or '(n/a)'} | {hypothesis} | {reason}")
+        (paths.artifacts_dir / "changelog.md").write_text("\n".join(changelog_lines).rstrip() + "\n", encoding="utf-8")
+
+        summary_payload = {
+            "target": target.name,
+            "metric": target.metric.name,
+            "baseline_metric": baseline_metric,
+            "best_metric": best_metric,
+            "stop_reason": stop_reason,
+            "rows": rows,
+        }
+        (paths.artifacts_dir / "score-summary.json").write_text(
+            json.dumps(summary_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     def _codex_failure_reason(self, result: Any, default: str) -> str:
         details = result.stderr.strip() or result.stdout.strip() or default

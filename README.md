@@ -39,6 +39,7 @@ with these workflows:
 
 - `plan` — draft a validated target file for a measurable repo objective
 - `loop` — run the real keep/discard improvement loop against a target
+- `skill-optimize` — optimize a `SKILL.md` with runner-backed inputs and binary evals
 - `debug` — produce structured findings for a concrete issue
 - `fix` — run an error-reduction loop
 - `security` — produce a read-first security review, with optional remediation mode
@@ -162,6 +163,7 @@ Look at:
 uv run autoresearch validate
 uv run autoresearch plan --goal "..."
 uv run autoresearch loop --target .autoresearch/targets/default.yaml
+uv run autoresearch skill-optimize --skill .agents/skills/my-skill/SKILL.md --inputs-file inputs.yaml --evals-file evals.yaml
 uv run autoresearch debug --summary "Investigate flaky parser behavior"
 uv run autoresearch fix --target .autoresearch/targets/default.yaml
 uv run autoresearch security --summary "Review the repo for security risks"

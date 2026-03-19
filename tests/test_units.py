@@ -9,6 +9,7 @@ from autoresearch.metrics import extract_metric
 from autoresearch.models import MetricExtractor
 from autoresearch.platform import PlatformReport, platform_warning_messages, target_platform_warning_messages
 from autoresearch.prompts import build_plan_prompt
+from autoresearch.skillopt import build_skill_optimize_target, load_evals_file, load_inputs_file, load_skill_optimize_request, pass_rate
 from autoresearch.targets import parse_target
 
 
@@ -53,6 +54,58 @@ class TargetAndMetricTests(unittest.TestCase):
             script.chmod(0o755)
             value = extract_metric(MetricExtractor("script", str(script)), log_path.read_text(encoding="utf-8"), temp, log_path)
             self.assertEqual(value, 4.0)
+
+    def test_skill_optimize_request_and_target_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            (repo / ".agents" / "skills" / "palette").mkdir(parents=True, exist_ok=True)
+            skill = repo / ".agents" / "skills" / "palette" / "SKILL.md"
+            skill.write_text(
+                "---\nname: palette-skill\ndescription: demo\n---\n\n# palette-skill\n\nPrefer pastel colors.\n",
+                encoding="utf-8",
+            )
+            inputs = repo / "inputs.yaml"
+            inputs.write_text("runs:\n  - id: sample\n    prompt: suggest a palette\n", encoding="utf-8")
+            evals = repo / "evals.yaml"
+            evals.write_text(
+                "evals:\n  - id: pastel_only\n    question: pastels only?\n    pass_condition: \"yes\"\n    fail_condition: \"no\"\n",
+                encoding="utf-8",
+            )
+
+            request = load_skill_optimize_request(
+                repo_root=repo,
+                skill=".agents/skills/palette/SKILL.md",
+                inputs_file="inputs.yaml",
+                evals_file="evals.yaml",
+                runs_per_experiment=2,
+            )
+            target = build_skill_optimize_target(request, max_iterations=4)
+
+            self.assertEqual(target.name, "palette-skill-optimize")
+            self.assertEqual(target.metric.extractor.type, "jsonpath")
+            self.assertIn(".agents/skills/palette/SKILL.md", target.scope.include)
+            self.assertIn("-m autoresearch.skillopt verify", target.verify.command)
+            self.assertEqual(target.stopping.max_iterations, 4)
+
+    def test_skill_optimize_dataset_validation_rejects_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            inputs = temp / "inputs.yaml"
+            inputs.write_text("runs:\n  - id: sample\n    prompt: one\n  - id: sample\n    prompt: two\n", encoding="utf-8")
+            evals = temp / "evals.yaml"
+            evals.write_text(
+                "evals:\n  - id: one\n    question: q\n    pass_condition: \"yes\"\n    fail_condition: \"no\"\n  - id: one\n    question: q2\n    pass_condition: \"yes\"\n    fail_condition: \"no\"\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(Exception, "duplicate input id"):
+                load_inputs_file(inputs)
+            with self.assertRaisesRegex(Exception, "duplicate eval id"):
+                load_evals_file(evals)
+
+    def test_skill_optimize_pass_rate(self) -> None:
+        self.assertEqual(pass_rate(3, 4), 0.75)
 
     def test_context_workspace_and_prompt_are_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

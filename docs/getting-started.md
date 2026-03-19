@@ -30,6 +30,15 @@ uv run autoresearch plan \
 uv run autoresearch loop --target .autoresearch/targets/default.yaml
 ```
 
+### Or optimize a skill directly
+
+```bash
+uv run autoresearch skill-optimize \
+  --skill .agents/skills/my-skill/SKILL.md \
+  --inputs-file path/to/inputs.yaml \
+  --evals-file path/to/evals.yaml
+```
+
 ## 5. Resume if needed
 
 ```bash

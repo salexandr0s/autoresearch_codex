@@ -10,6 +10,7 @@
 ## Workflows
 - [autoresearch-plan](workflows/plan.md)
 - [autoresearch-loop](workflows/loop.md)
+- [autoresearch-skill-optimize](workflows/skill-optimize.md)
 - [autoresearch-debug](workflows/debug.md)
 - [autoresearch-fix](workflows/fix.md)
 - [autoresearch-security](workflows/security.md)

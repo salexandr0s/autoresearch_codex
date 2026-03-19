@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 Decision = Literal["baseline", "keep", "discard", "crash", "inconclusive", "blocked"]
-Workflow = Literal["plan", "loop", "debug", "fix", "security", "ship"]
+Workflow = Literal["plan", "loop", "debug", "fix", "security", "ship", "skill-optimize"]
 CompletionMode = Literal["model", "fallback"]
 
 

@@ -35,6 +35,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_codex_execution_args(loop)
     add_iterative_args(loop)
 
+    skill_optimize = subparsers.add_parser("skill-optimize", help="Optimize a SKILL.md with runner-backed evals")
+    add_common_runtime_args(skill_optimize)
+    add_codex_execution_args(skill_optimize)
+    skill_optimize.add_argument("--skill", required=True, help="Path to the target SKILL.md")
+    skill_optimize.add_argument("--inputs-file", required=True, help="YAML file describing test prompts")
+    skill_optimize.add_argument("--evals-file", required=True, help="YAML file describing binary evals")
+    skill_optimize.add_argument("--runs-per-experiment", type=int, default=3, help="How many times to run each input per verify pass")
+    skill_optimize.add_argument("--references", help="Optional editable references/examples path")
+    skill_optimize.add_argument("--target-name", help="Optional generated target name")
+    skill_optimize.add_argument("--target-path", help="Optional generated target path")
+    skill_optimize.add_argument("--max-iterations", type=int, help="Generated target max_iterations value")
+    skill_optimize.add_argument("--unbounded", action="store_true", help="Ignore max_iterations and keep looping until stopped")
+
     debug = subparsers.add_parser("debug", help="Run a debug investigation")
     add_common_runtime_args(debug)
     add_codex_execution_args(debug)
@@ -127,6 +140,22 @@ def main(argv: list[str] | None = None) -> int:
                 target=target,
                 run_id=args.run_id,
                 max_iterations_override=args.max_iterations,
+                unbounded=args.unbounded,
+                deadline_seconds=args.deadline_seconds,
+            )
+            print(str(paths.root))
+            return 0
+
+        if args.command == "skill-optimize":
+            paths = runner.run_skill_optimize(
+                skill=args.skill,
+                inputs_file=args.inputs_file,
+                evals_file=args.evals_file,
+                runs_per_experiment=args.runs_per_experiment,
+                references=args.references,
+                target_name=args.target_name,
+                target_path=resolve_target_path(repo_root, args.target_path) if args.target_path else None,
+                max_iterations=args.max_iterations,
                 unbounded=args.unbounded,
                 deadline_seconds=args.deadline_seconds,
             )
