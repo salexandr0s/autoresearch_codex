@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from autoresearch.context import build_context_workspace, infer_fallback_target
+from autoresearch.gitops import ensure_worktree
 from autoresearch.metrics import extract_metric
 from autoresearch.models import MetricExtractor
+from autoresearch.pathing import resolve_release_output_path, resolve_run_dir, validate_run_id
 from autoresearch.platform import PlatformReport, platform_warning_messages, target_platform_warning_messages
 from autoresearch.prompts import build_plan_prompt
 from autoresearch.skillopt import (
@@ -20,7 +23,7 @@ from autoresearch.skillopt import (
     load_skill_optimize_request,
     pass_rate,
 )
-from autoresearch.targets import parse_target
+from autoresearch.targets import parse_target, resolve_target_path
 
 
 class TargetAndMetricTests(unittest.TestCase):
@@ -215,6 +218,74 @@ class TargetAndMetricTests(unittest.TestCase):
             self.assertLess(len(prompt.encode("utf-8")), 8_000)
             self.assertNotIn("AGENTS.md", prompt)
             self.assertTrue((artifacts / "context-summary.md").exists())
+
+    def test_context_workspace_can_skip_persisted_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+            run_root = repo / ".autoresearch" / "runs" / "test"
+            artifacts = run_root / "artifacts"
+            context_workspace = run_root / "context"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            packet = build_context_workspace(
+                repo_root=repo,
+                workspace=context_workspace,
+                artifacts_dir=artifacts,
+                workflow="debug",
+                request_text="Investigate the fixture",
+                persist_artifacts=False,
+            )
+            self.assertTrue((context_workspace / "summary.md").exists())
+            self.assertGreater(len(packet.selected_files), 0)
+            self.assertFalse((artifacts / "context-summary.md").exists())
+            self.assertFalse((artifacts / "context-manifest.json").exists())
+
+    def test_resolve_target_path_rejects_repo_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            with self.assertRaisesRegex(Exception, "target path escapes repository root"):
+                resolve_target_path(repo, "../outside.yaml")
+
+    def test_validate_run_id_rejects_path_like_input(self) -> None:
+        with self.assertRaisesRegex(Exception, "single safe path segment"):
+            validate_run_id("../../tmp/bad")
+        self.assertEqual(validate_run_id("2026-03-19T120000Z-demo"), "2026-03-19T120000Z-demo")
+
+    def test_resolve_run_dir_stays_under_runs_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            run_dir = resolve_run_dir(repo, "2026-03-19T120000Z-demo")
+            self.assertTrue(str(run_dir).endswith(".autoresearch/runs/2026-03-19T120000Z-demo"))
+
+    def test_resolve_release_output_path_requires_dist_subdir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            self.assertEqual(resolve_release_output_path(repo, "dist/release"), repo.resolve() / "dist" / "release")
+            with self.assertRaisesRegex(Exception, "must stay under dist/"):
+                resolve_release_output_path(repo, "../release")
+            with self.assertRaisesRegex(Exception, "subdirectory under dist/"):
+                resolve_release_output_path(repo, "dist")
+
+    def test_ensure_worktree_ignores_unregistered_existing_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True, text=True)
+            (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "baseline"], cwd=repo, check=True, capture_output=True, text=True)
+
+            worktree = ensure_worktree(repo, "autoresearch/loop/demo", "demo", "/tmp")
+
+            self.assertNotEqual(worktree.resolve(), Path("/tmp").resolve())
+            self.assertTrue(worktree.exists())
+            self.assertTrue((worktree / ".git").exists())
 
     def test_plan_fallback_target_infers_test_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

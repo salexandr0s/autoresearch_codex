@@ -17,6 +17,7 @@ import yaml
 from .backend import resolve_codex_bin, run_codex
 from .errors import BlockedRunError, ValidationError
 from .models import CommandConfig, MetricConfig, MetricExtractor, ScopeConfig, StoppingConfig, TargetConfig
+from .pathing import resolve_repo_path
 
 DEFAULT_MAX_ITERATIONS = 10
 DEFAULT_RUNS_PER_EXPERIMENT = 3
@@ -586,15 +587,7 @@ def _load_yaml_mapping(path: Path, label: str) -> dict[str, Any]:
 def _resolve_repo_path(repo_root: Path, value: str | None) -> Path:
     if value is None:
         raise ValidationError("missing required path")
-    path = Path(value)
-    if not path.is_absolute():
-        path = repo_root / path
-    path = path.resolve()
-    try:
-        path.relative_to(repo_root)
-    except ValueError as exc:
-        raise ValidationError(f"path escapes repository root: {value}") from exc
-    return path
+    return resolve_repo_path(repo_root, value, purpose="path")
 
 
 def _repo_relative(repo_root: Path, path: Path | None) -> str:

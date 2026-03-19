@@ -99,6 +99,12 @@ Codex owns only the bounded inner task:
 
 By default this tool does **not** push, merge, publish, deploy, rotate secrets, or perform destructive git cleanup.
 
+Important safety notes:
+- target files are **trusted executable config** because `verify` / `guard` commands run locally
+- `--target` / `--target-path` must stay inside the active repository
+- `resume --run-id` only accepts a real run id, not a filesystem path
+- use `--artifact-policy minimal` for CI, shared runners, or third-party repos when you want less run data persisted under `.autoresearch/runs/`
+
 ## Repo layout
 
 - `AGENTS.md` — permanent operating doctrine
@@ -174,6 +180,7 @@ uv run autoresearch resume --run-id <run-id>
 ## Verification
 
 ```bash
+python3 scripts/scan-secrets.py
 uv run autoresearch validate --target .autoresearch/targets/live-dogfood-tests.yaml
 uv run python -m unittest discover -s tests -v
 python3 scripts/smoke/run.py

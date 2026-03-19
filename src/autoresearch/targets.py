@@ -7,6 +7,7 @@ import yaml
 
 from .errors import ValidationError
 from .models import CommandConfig, MetricConfig, MetricExtractor, ScopeConfig, StoppingConfig, TargetConfig
+from .pathing import resolve_repo_path
 
 
 def _require_string(data: dict[str, Any], key: str) -> str:
@@ -103,10 +104,4 @@ def _optional_float(value: Any) -> float | None:
 
 
 def resolve_target_path(repo_root: Path, explicit: str | None) -> Path:
-    if explicit:
-        path = Path(explicit)
-        if not path.is_absolute():
-            path = repo_root / path
-    else:
-        path = repo_root / ".autoresearch/targets/default.yaml"
-    return path.resolve()
+    return resolve_repo_path(repo_root, explicit or ".autoresearch/targets/default.yaml", purpose="target path")

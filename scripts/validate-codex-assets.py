@@ -203,10 +203,12 @@ def main() -> int:
         require_exists("examples/macos/karpathy-train-loop.yaml")
         require_exists("examples/macos/tests-growth.yaml")
         require_exists("scripts/release.sh")
+        require_exists("scripts/scan-secrets.py")
         require_exists("scripts/smoke/run.py")
         require_exists("src/autoresearch/cli.py")
         require_exists("src/autoresearch/engine.py")
         require_exists("tests/test_runtime.py")
+        require_exists(".github/workflows/ci.yml")
 
     if config.exists():
         config_text = read_text(config)

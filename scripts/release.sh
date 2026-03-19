@@ -10,6 +10,23 @@ if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=1
 fi
 
+OUT="$(PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" python3 - "$ROOT" "$OUT" <<'PY'
+from pathlib import Path
+import sys
+
+from autoresearch.errors import ValidationError
+from autoresearch.pathing import resolve_release_output_path
+
+root = Path(sys.argv[1]).resolve()
+raw = sys.argv[2]
+try:
+    print(resolve_release_output_path(root, raw))
+except ValidationError as exc:
+    print(f"error: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+)"
+
 cd "$ROOT"
 python3 scripts/validate-codex-assets.py
 

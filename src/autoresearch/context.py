@@ -101,6 +101,7 @@ def build_context_workspace(
     artifacts_dir: Path,
     workflow: Workflow,
     request_text: str,
+    persist_artifacts: bool = True,
 ) -> ContextPacket:
     workspace.mkdir(parents=True, exist_ok=True)
     files_dir = workspace / "files"
@@ -161,20 +162,21 @@ def build_context_workspace(
         sort_keys=True,
     ) + "\n", encoding="utf-8")
 
-    (artifacts_dir / "context-summary.md").write_text(summary_text, encoding="utf-8")
-    (artifacts_dir / "context-manifest.json").write_text(json.dumps(
-        {
-            "workflow": workflow,
-            "repo_facts": repo_facts,
-            "candidate_verify_commands": candidate_verify_commands,
-            "candidate_scope_globs": candidate_scope_globs,
-            "metric_candidates": metric_candidates,
-            "selected_files": [asdict(item) for item in context_files],
-            "total_bytes": total_bytes,
-        },
-        indent=2,
-        sort_keys=True,
-    ) + "\n", encoding="utf-8")
+    if persist_artifacts:
+        (artifacts_dir / "context-summary.md").write_text(summary_text, encoding="utf-8")
+        (artifacts_dir / "context-manifest.json").write_text(json.dumps(
+            {
+                "workflow": workflow,
+                "repo_facts": repo_facts,
+                "candidate_verify_commands": candidate_verify_commands,
+                "candidate_scope_globs": candidate_scope_globs,
+                "metric_candidates": metric_candidates,
+                "selected_files": [asdict(item) for item in context_files],
+                "total_bytes": total_bytes,
+            },
+            indent=2,
+            sort_keys=True,
+        ) + "\n", encoding="utf-8")
 
     return ContextPacket(
         workflow=workflow,

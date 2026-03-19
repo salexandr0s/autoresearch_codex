@@ -27,7 +27,7 @@ def run_codex(
     cwd: Path,
     prompt: str,
     final_message_file: Path,
-    agent_jsonl_file: Path,
+    agent_jsonl_file: Path | None,
     model: str | None = None,
     profile: str | None = None,
     search: bool = False,
@@ -37,7 +37,8 @@ def run_codex(
     sandbox_mode: str = "workspace-write",
 ) -> BackendResult:
     final_message_file.parent.mkdir(parents=True, exist_ok=True)
-    agent_jsonl_file.parent.mkdir(parents=True, exist_ok=True)
+    if agent_jsonl_file is not None:
+        agent_jsonl_file.parent.mkdir(parents=True, exist_ok=True)
 
     command = [codex_bin, "-a", "never", "-s", sandbox_mode, "exec", "-C", str(cwd), "-o", str(final_message_file), "--json"]
     if skip_git_repo_check:
@@ -72,7 +73,8 @@ def run_codex(
                 sink.close()
             pipe.close()
 
-    agent_jsonl_file.write_text("", encoding="utf-8")
+    if agent_jsonl_file is not None:
+        agent_jsonl_file.write_text("", encoding="utf-8")
     proc = subprocess.Popen(
         command,
         cwd=str(cwd),

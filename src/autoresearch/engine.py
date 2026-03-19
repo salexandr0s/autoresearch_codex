@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -22,7 +25,8 @@ from .gitops import (
     revert_head,
 )
 from .metrics import extract_metric
-from .models import EngineState, ResultRow, RunPaths, TargetConfig, Workflow
+from .models import ArtifactPolicy, EngineState, ResultRow, RunPaths, TargetConfig, Workflow
+from .pathing import resolve_repo_path, resolve_run_dir, validate_run_id
 from .prompts import (
     build_iteration_prompt,
     build_plan_prompt,
@@ -142,6 +146,7 @@ class Runner:
         target_name: str,
         target_path: Path,
         deadline_seconds: int | None = None,
+        artifact_policy: ArtifactPolicy = "standard",
     ) -> Path:
         run_id = make_run_id(f"plan-{target_name}")
         paths = make_run_paths(self.repo_root, run_id)
@@ -154,92 +159,93 @@ class Runner:
                 f"done_when: {done_when or '(none provided)'}",
             ]
         )
-        context_packet = build_context_workspace(
-            repo_root=self.repo_root,
-            workspace=paths.context_dir,
-            artifacts_dir=paths.artifacts_dir,
-            workflow="plan",
-            request_text=request_text,
-        )
-        prompt = build_plan_prompt(
-            target_name=target_name,
-            goal=goal,
-            context=context,
-            constraints=constraints,
-            done_when=done_when,
-            context_summary=context_packet.summary_text,
-        )
-        iteration_dir = paths.iterations_dir / "plan"
-        iteration_dir.mkdir(parents=True, exist_ok=True)
-        prompt_file = iteration_dir / "prompt.md"
-        final_file = iteration_dir / "codex-final.md"
-        events_file = iteration_dir / "agent.jsonl"
-        schema_file = write_plan_output_schema(paths.schemas_dir / "plan-output.schema.json")
-        prompt_file.write_text(prompt, encoding="utf-8")
-        engine = self._make_engine(
-            run_id=run_id,
-            workflow="plan",
-            target_path=target_path,
-            worktree_path=paths.context_dir,
-            resumable=False,
-            workspace_kind="context",
-            deadline_seconds=deadline_seconds,
-            prompt_bytes=len(prompt.encode("utf-8")),
-            context_bytes=context_packet.total_bytes,
-            selected_file_count=len(context_packet.selected_files),
-        )
-        write_engine(paths, engine)
-        result = run_codex(
-            codex_bin=self.codex_bin,
-            cwd=paths.context_dir,
-            prompt=prompt,
-            final_message_file=final_file,
-            agent_jsonl_file=events_file,
-            model=self.model,
-            profile=self.profile,
-            search=self.search,
-            deadline_seconds=deadline_seconds,
-            skip_git_repo_check=True,
-            output_schema_file=schema_file,
-            sandbox_mode="read-only",
-        )
-        completion_mode = "model"
-        timed_out = result.timed_out
-        fallback_reason = self._codex_failure_reason(result, "Codex plan run failed")
-        try:
-            raw = json.loads(result.final_message)
-            if not isinstance(raw, dict):
-                raise ValidationError("plan output must be a JSON object")
-            target = parse_target(raw)
-        except Exception as exc:  # noqa: BLE001
-            fallback_reason = f"{fallback_reason}; fallback used because {exc}"
-            target = infer_fallback_target(
+        with self._context_workspace(paths=paths, artifact_policy=artifact_policy, prefix="autoresearch-plan-context-") as context_workspace:
+            context_packet = build_context_workspace(
+                repo_root=self.repo_root,
+                workspace=context_workspace,
+                artifacts_dir=paths.artifacts_dir,
+                workflow="plan",
+                request_text=request_text,
+                persist_artifacts=not self._is_minimal_artifacts(artifact_policy),
+            )
+            prompt = build_plan_prompt(
                 target_name=target_name,
                 goal=goal,
+                context=context,
                 constraints=constraints,
-                context_packet=context_packet,
+                done_when=done_when,
+                context_summary=context_packet.summary_text,
             )
-            completion_mode = "fallback"
-            if target is None:
-                (paths.artifacts_dir / "fallback.md").write_text(
-                    self._render_plan_fallback_summary(
-                        target_path=target_path,
-                        goal=goal,
-                        context_packet=context_packet,
-                        reason=fallback_reason,
-                    ),
-                    encoding="utf-8",
-                )
-                engine = replace(
-                    engine,
-                    status="blocked",
-                    updated_at=iso_now(),
-                    duration_seconds=result.duration_seconds,
-                    timed_out=timed_out,
-                    completion_mode="fallback",
+            with self._run_context(paths=paths, label="plan", artifact_policy=artifact_policy, prefix="autoresearch-plan-run-") as run_context:
+                schema_target = (paths.schemas_dir / "plan-output.schema.json") if not self._is_minimal_artifacts(artifact_policy) else (run_context["dir"] / "plan-output.schema.json")
+                schema_file = write_plan_output_schema(schema_target)
+                run_context["prompt"].write_text(prompt, encoding="utf-8")
+                engine = self._make_engine(
+                    run_id=run_id,
+                    workflow="plan",
+                    target_path=target_path,
+                    worktree_path=context_workspace,
+                    resumable=False,
+                    artifact_policy=artifact_policy,
+                    workspace_kind="context",
+                    deadline_seconds=deadline_seconds,
+                    prompt_bytes=len(prompt.encode("utf-8")),
+                    context_bytes=context_packet.total_bytes,
+                    selected_file_count=len(context_packet.selected_files),
                 )
                 write_engine(paths, engine)
-                raise BlockedRunError(f"plan timed out or returned unusable output: {fallback_reason}")
+                result = run_codex(
+                    codex_bin=self.codex_bin,
+                    cwd=context_workspace,
+                    prompt=prompt,
+                    final_message_file=run_context["final"],
+                    agent_jsonl_file=run_context["events"],
+                    model=self.model,
+                    profile=self.profile,
+                    search=self.search,
+                    deadline_seconds=deadline_seconds,
+                    skip_git_repo_check=True,
+                    output_schema_file=schema_file,
+                    sandbox_mode="read-only",
+                )
+                completion_mode = "model"
+                timed_out = result.timed_out
+                fallback_reason = self._codex_failure_reason(result, "Codex plan run failed")
+                try:
+                    raw = json.loads(result.final_message)
+                    if not isinstance(raw, dict):
+                        raise ValidationError("plan output must be a JSON object")
+                    target = parse_target(raw)
+                except Exception as exc:  # noqa: BLE001
+                    fallback_reason = f"{fallback_reason}; fallback used because {exc}"
+                    target = infer_fallback_target(
+                        target_name=target_name,
+                        goal=goal,
+                        constraints=constraints,
+                        context_packet=context_packet,
+                    )
+                    completion_mode = "fallback"
+                    if target is None:
+                        if not self._is_minimal_artifacts(artifact_policy):
+                            (paths.artifacts_dir / "fallback.md").write_text(
+                                self._render_plan_fallback_summary(
+                                    target_path=target_path,
+                                    goal=goal,
+                                    context_packet=context_packet,
+                                    reason=fallback_reason,
+                                ),
+                                encoding="utf-8",
+                            )
+                        engine = replace(
+                            engine,
+                            status="blocked",
+                            updated_at=iso_now(),
+                            duration_seconds=result.duration_seconds,
+                            timed_out=timed_out,
+                            completion_mode="fallback",
+                        )
+                        write_engine(paths, engine)
+                        raise BlockedRunError(f"plan timed out or returned unusable output: {fallback_reason}")
 
         target.path = target_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,7 +258,8 @@ class Runner:
                 context_packet=context_packet,
                 reason=fallback_reason,
             )
-            (paths.artifacts_dir / "fallback.md").write_text(fallback_text, encoding="utf-8")
+            if not self._is_minimal_artifacts(artifact_policy):
+                (paths.artifacts_dir / "fallback.md").write_text(fallback_text, encoding="utf-8")
             fallback_block = f"- completion mode: fallback\n- fallback reason: {fallback_reason}\n"
         write_summary(
             paths,
@@ -260,6 +267,7 @@ class Runner:
             f"- target: `{target_path.relative_to(self.repo_root)}`\n"
             f"- goal: {target.goal}\n"
             f"- verify: `{target.verify.command}`\n"
+            f"- artifact policy: {artifact_policy}\n"
             f"- deadline seconds: {deadline_seconds}\n"
             f"- duration seconds: {result.duration_seconds:.2f}\n"
             f"- prompt bytes: {len(prompt.encode('utf-8'))}\n"
@@ -274,6 +282,7 @@ class Runner:
             duration_seconds=result.duration_seconds,
             timed_out=timed_out,
             completion_mode=completion_mode,
+            artifact_policy=artifact_policy,
         )
         write_engine(paths, engine)
         return target_path
@@ -289,75 +298,76 @@ class Runner:
         deadline_seconds: int | None = None,
         json_artifact_name: str | None = None,
         secondary_markdown_name: str | None = None,
+        artifact_policy: ArtifactPolicy = "standard",
     ) -> RunPaths:
         run_id = make_run_id(f"{workflow}-{artifact_name}")
         paths = make_run_paths(self.repo_root, run_id)
         deadline_seconds = deadline_seconds or DEFAULT_REPORT_DEADLINE_SECONDS
-        execution_root = ensure_worktree(self.repo_root, f"autoresearch/{workflow}/{run_id}", run_id) if allow_code_changes else paths.context_dir
-        context_packet = build_context_workspace(
-            repo_root=self.repo_root,
-            workspace=paths.context_dir,
-            artifacts_dir=paths.artifacts_dir,
-            workflow=workflow,
-            request_text=request_summary,
-        )
-        engine = self._make_engine(
-            run_id=run_id,
-            workflow=workflow,
-            target_path=None,
-            worktree_path=execution_root,
-            resumable=False,
-            workspace_kind="worktree" if allow_code_changes else "context",
-            deadline_seconds=deadline_seconds,
-            prompt_bytes=0,
-            context_bytes=context_packet.total_bytes,
-            selected_file_count=len(context_packet.selected_files),
-        )
-        write_engine(paths, engine)
+        with self._context_workspace(paths=paths, artifact_policy=artifact_policy, prefix=f"autoresearch-{workflow}-context-") as context_workspace:
+            execution_root = ensure_worktree(self.repo_root, f"autoresearch/{workflow}/{run_id}", run_id) if allow_code_changes else context_workspace
+            context_packet = build_context_workspace(
+                repo_root=self.repo_root,
+                workspace=context_workspace,
+                artifacts_dir=paths.artifacts_dir,
+                workflow=workflow,
+                request_text=request_summary,
+                persist_artifacts=not self._is_minimal_artifacts(artifact_policy),
+            )
+            engine = self._make_engine(
+                run_id=run_id,
+                workflow=workflow,
+                target_path=None,
+                worktree_path=execution_root,
+                resumable=False,
+                artifact_policy=artifact_policy,
+                workspace_kind="worktree" if allow_code_changes else "context",
+                deadline_seconds=deadline_seconds,
+                prompt_bytes=0,
+                context_bytes=context_packet.total_bytes,
+                selected_file_count=len(context_packet.selected_files),
+            )
+            write_engine(paths, engine)
 
-        prompt = build_report_prompt(
-            workflow=workflow,
-            request_summary=request_summary,
-            allow_code_changes=allow_code_changes,
-            context_summary=context_packet.summary_text,
-        )
-        iteration_dir = paths.iterations_dir / "1"
-        iteration_dir.mkdir(parents=True, exist_ok=True)
-        prompt_file = iteration_dir / "prompt.md"
-        final_file = iteration_dir / "codex-final.md"
-        events_file = iteration_dir / "agent.jsonl"
-        schema_file = write_report_output_schema(paths.schemas_dir / f"{workflow}-output.schema.json", workflow)
-        prompt_file.write_text(prompt, encoding="utf-8")
-        engine = replace(engine, prompt_bytes=len(prompt.encode("utf-8")))
-        write_engine(paths, engine)
-        result = run_codex(
-            codex_bin=self.codex_bin,
-            cwd=execution_root,
-            prompt=prompt,
-            final_message_file=final_file,
-            agent_jsonl_file=events_file,
-            model=self.model,
-            profile=self.profile,
-            search=self.search,
-            deadline_seconds=deadline_seconds,
-            skip_git_repo_check=not allow_code_changes,
-            output_schema_file=schema_file,
-            sandbox_mode="workspace-write" if allow_code_changes else "read-only",
-        )
-        fallback_reason = self._codex_failure_reason(result, f"Codex {workflow} run failed")
-        completion_mode = "model"
-        try:
-            report_data = json.loads(result.final_message)
-            self._validate_report_payload(workflow, report_data)
-        except Exception as exc:  # noqa: BLE001
-            completion_mode = "fallback"
-            fallback_reason = f"{fallback_reason}; fallback used because {exc}"
-            report_data = build_report_fallback(
+            prompt = build_report_prompt(
                 workflow=workflow,
                 request_summary=request_summary,
-                context_packet=context_packet,
-                reason=fallback_reason,
+                allow_code_changes=allow_code_changes,
+                context_summary=context_packet.summary_text,
             )
+            with self._run_context(paths=paths, label="1", artifact_policy=artifact_policy, prefix=f"autoresearch-{workflow}-run-") as run_context:
+                schema_target = (paths.schemas_dir / f"{workflow}-output.schema.json") if not self._is_minimal_artifacts(artifact_policy) else (run_context["dir"] / f"{workflow}-output.schema.json")
+                schema_file = write_report_output_schema(schema_target, workflow)
+                run_context["prompt"].write_text(prompt, encoding="utf-8")
+                engine = replace(engine, prompt_bytes=len(prompt.encode("utf-8")))
+                write_engine(paths, engine)
+                result = run_codex(
+                    codex_bin=self.codex_bin,
+                    cwd=execution_root,
+                    prompt=prompt,
+                    final_message_file=run_context["final"],
+                    agent_jsonl_file=run_context["events"],
+                    model=self.model,
+                    profile=self.profile,
+                    search=self.search,
+                    deadline_seconds=deadline_seconds,
+                    skip_git_repo_check=not allow_code_changes,
+                    output_schema_file=schema_file,
+                    sandbox_mode="workspace-write" if allow_code_changes else "read-only",
+                )
+                fallback_reason = self._codex_failure_reason(result, f"Codex {workflow} run failed")
+                completion_mode = "model"
+                try:
+                    report_data = json.loads(result.final_message)
+                    self._validate_report_payload(workflow, report_data)
+                except Exception as exc:  # noqa: BLE001
+                    completion_mode = "fallback"
+                    fallback_reason = f"{fallback_reason}; fallback used because {exc}"
+                    report_data = build_report_fallback(
+                        workflow=workflow,
+                        request_summary=request_summary,
+                        context_packet=context_packet,
+                        reason=fallback_reason,
+                    )
         artifact = paths.artifacts_dir / artifact_name
         artifact.write_text(self._render_report_markdown(report_data), encoding="utf-8")
         if json_artifact_name:
@@ -382,6 +392,7 @@ class Runner:
             f"# {workflow} summary\n\n"
             f"- run id: `{run_id}`\n"
             f"- artifact: `{artifact.relative_to(paths.root)}`\n"
+            f"- artifact policy: {artifact_policy}\n"
             f"- deadline seconds: {deadline_seconds}\n"
             f"- duration seconds: {result.duration_seconds:.2f}\n"
             f"- prompt bytes: {len(prompt.encode('utf-8'))}\n"
@@ -390,7 +401,8 @@ class Runner:
             f"- completion mode: {completion_mode}\n"
         )
         if completion_mode == "fallback":
-            (paths.artifacts_dir / "fallback.md").write_text(self._render_report_markdown(report_data), encoding="utf-8")
+            if not self._is_minimal_artifacts(artifact_policy):
+                (paths.artifacts_dir / "fallback.md").write_text(self._render_report_markdown(report_data), encoding="utf-8")
             summary += f"- fallback reason: {fallback_reason}\n"
         if allow_code_changes and changed_files(execution_root):
             summary += "- warning: Codex modified files during a report-only workflow; inspect the worktree before trusting the output.\n"
@@ -402,6 +414,7 @@ class Runner:
             duration_seconds=result.duration_seconds,
             timed_out=result.timed_out,
             completion_mode=completion_mode,
+            artifact_policy=artifact_policy,
         )
         write_engine(paths, engine)
         return paths
@@ -419,6 +432,7 @@ class Runner:
         max_iterations: int | None,
         unbounded: bool,
         deadline_seconds: int | None = None,
+        artifact_policy: ArtifactPolicy = "standard",
     ) -> RunPaths:
         request = load_skill_optimize_request(
             repo_root=self.repo_root,
@@ -438,6 +452,7 @@ class Runner:
             target=target,
             unbounded=unbounded,
             deadline_seconds=deadline_seconds,
+            artifact_policy=artifact_policy,
         )
 
     def run_iterative_workflow(
@@ -450,6 +465,7 @@ class Runner:
         unbounded: bool = False,
         findings_text: str | None = None,
         deadline_seconds: int | None = None,
+        artifact_policy: ArtifactPolicy = "standard",
     ) -> RunPaths:
         run_id = run_id or make_run_id(f"{workflow}-{target.name}")
         paths = make_run_paths(self.repo_root, run_id)
@@ -461,7 +477,10 @@ class Runner:
         if deadline_seconds is not None and engine.deadline_seconds != deadline_seconds:
             engine = replace(engine, deadline_seconds=deadline_seconds, updated_at=iso_now())
             write_engine(paths, engine)
-        best_metric, baseline_metric, failure_count = self._ensure_baseline(paths=paths, target=target, engine=engine)
+        if engine.artifact_policy != artifact_policy:
+            engine = replace(engine, artifact_policy=artifact_policy, updated_at=iso_now())
+            write_engine(paths, engine)
+        best_metric, baseline_metric, failure_count = self._ensure_baseline(paths=paths, target=target, engine=engine, artifact_policy=artifact_policy)
 
         max_iterations = max_iterations_override or target.stopping.max_iterations
         rows = read_results(paths)
@@ -478,131 +497,131 @@ class Runner:
 
             reflection_mode = failure_count >= target.stopping.stagnation_reflect_after
             recent_results = format_recent_results(read_results(paths))
-            context = self._iteration_context(paths, iteration)
-            prompt = build_iteration_prompt(
-                workflow=workflow,
-                target=target,
-                engine=engine,
-                iteration=iteration,
-                baseline_metric=baseline_metric,
-                best_metric=best_metric,
-                recent_results=recent_results,
-                reflection_mode=reflection_mode,
-                findings_text=findings_text,
-            )
-            context["prompt"].write_text(prompt, encoding="utf-8")
-            result = run_codex(
-                codex_bin=self.codex_bin,
-                cwd=Path(engine.worktree_path),
-                prompt=prompt,
-                final_message_file=context["final"],
-                agent_jsonl_file=context["events"],
-                model=self.model,
-                profile=self.profile,
-                search=self.search,
-                deadline_seconds=engine.deadline_seconds,
-            )
-            hypothesis = parse_hypothesis(result.final_message, f"{workflow} iteration {iteration}")
-            files = changed_files(Path(engine.worktree_path))
-            commit = current_short_commit(Path(engine.worktree_path))
-            revert_commit = ""
-            metric_value: float | None = None
-            verify_status = "not-run"
-            guard_status = "not-run"
-            decision = "inconclusive"
-            reason = "no_changes"
-
-            if result.exit_code != 0 and not files:
-                decision = "inconclusive"
-                reason = result.stderr.strip() or result.stdout.strip() or "codex_failed"
-            elif not files:
+            with self._run_context(paths=paths, label=str(iteration), artifact_policy=artifact_policy, prefix=f"autoresearch-{workflow}-{iteration}-") as context:
+                prompt = build_iteration_prompt(
+                    workflow=workflow,
+                    target=target,
+                    engine=engine,
+                    iteration=iteration,
+                    baseline_metric=baseline_metric,
+                    best_metric=best_metric,
+                    recent_results=recent_results,
+                    reflection_mode=reflection_mode,
+                    findings_text=findings_text,
+                )
+                context["prompt"].write_text(prompt, encoding="utf-8")
+                result = run_codex(
+                    codex_bin=self.codex_bin,
+                    cwd=Path(engine.worktree_path),
+                    prompt=prompt,
+                    final_message_file=context["final"],
+                    agent_jsonl_file=context["events"],
+                    model=self.model,
+                    profile=self.profile,
+                    search=self.search,
+                    deadline_seconds=engine.deadline_seconds,
+                )
+                hypothesis = parse_hypothesis(result.final_message, f"{workflow} iteration {iteration}")
+                files = changed_files(Path(engine.worktree_path))
+                commit = current_short_commit(Path(engine.worktree_path))
+                revert_commit = ""
+                metric_value: float | None = None
+                verify_status = "not-run"
+                guard_status = "not-run"
                 decision = "inconclusive"
                 reason = "no_changes"
-            else:
-                commit = commit_all(Path(engine.worktree_path), f"experiment: {hypothesis}")
-                if not files_within_scope(files, target.scope):
-                    decision = "discard"
-                    reason = "out_of_scope_changes"
-                    revert_commit = revert_head(Path(engine.worktree_path))
+
+                if result.exit_code != 0 and not files:
+                    decision = "inconclusive"
+                    reason = result.stderr.strip() or result.stdout.strip() or "codex_failed"
+                elif not files:
+                    decision = "inconclusive"
+                    reason = "no_changes"
                 else:
-                    verify_proc, verify_text = self._run_command(
-                        target.verify.command,
-                        Path(engine.worktree_path),
-                        context["verify_log"],
-                        artifact_dir=context["verify_artifacts"],
-                        workflow=workflow,
-                    )
-                    verify_status = f"exit:{verify_proc.returncode}"
-                    if verify_proc.returncode != 0:
-                        if "ambiguous_verify:" in verify_text:
-                            decision = "inconclusive"
-                            reason = "verify_ambiguous"
-                        else:
-                            decision = "crash"
-                            reason = "verify_failed"
+                    commit = commit_all(Path(engine.worktree_path), f"experiment: {hypothesis}")
+                    if not files_within_scope(files, target.scope):
+                        decision = "discard"
+                        reason = "out_of_scope_changes"
                         revert_commit = revert_head(Path(engine.worktree_path))
                     else:
-                        try:
-                            metric_value = extract_metric(target.metric.extractor, verify_text, Path(engine.worktree_path), context["verify_log"])
-                        except ValidationError as exc:
-                            decision = "inconclusive"
-                            reason = f"metric_parse_failed: {exc}"
+                        verify_proc, verify_text = self._run_command(
+                            target.verify.command,
+                            Path(engine.worktree_path),
+                            context["verify_log"],
+                            artifact_dir=context["verify_artifacts"],
+                            workflow=workflow,
+                        )
+                        verify_status = f"exit:{verify_proc.returncode}"
+                        if verify_proc.returncode != 0:
+                            if "ambiguous_verify:" in verify_text:
+                                decision = "inconclusive"
+                                reason = "verify_ambiguous"
+                            else:
+                                decision = "crash"
+                                reason = "verify_failed"
                             revert_commit = revert_head(Path(engine.worktree_path))
                         else:
-                            if target.guard:
-                                guard_proc, _guard_text = self._run_command(
-                                    target.guard.command,
-                                    Path(engine.worktree_path),
-                                    context["guard_log"],
-                                    artifact_dir=context["verify_artifacts"],
-                                    workflow=workflow,
-                                )
-                                guard_status = f"exit:{guard_proc.returncode}"
-                                if guard_proc.returncode != 0:
-                                    decision = "discard"
-                                    reason = "guard_failed"
-                                    revert_commit = revert_head(Path(engine.worktree_path))
+                            try:
+                                metric_value = extract_metric(target.metric.extractor, verify_text, Path(engine.worktree_path), context["verify_log"])
+                            except ValidationError as exc:
+                                decision = "inconclusive"
+                                reason = f"metric_parse_failed: {exc}"
+                                revert_commit = revert_head(Path(engine.worktree_path))
+                            else:
+                                if target.guard:
+                                    guard_proc, _guard_text = self._run_command(
+                                        target.guard.command,
+                                        Path(engine.worktree_path),
+                                        context["guard_log"],
+                                        artifact_dir=context["verify_artifacts"],
+                                        workflow=workflow,
+                                    )
+                                    guard_status = f"exit:{guard_proc.returncode}"
+                                    if guard_proc.returncode != 0:
+                                        decision = "discard"
+                                        reason = "guard_failed"
+                                        revert_commit = revert_head(Path(engine.worktree_path))
+                                    else:
+                                        decision, reason, revert_commit, best_metric = self._accept_or_reject(
+                                            metric_value=metric_value,
+                                            best_metric=best_metric,
+                                            target=target,
+                                            worktree=Path(engine.worktree_path),
+                                        )
                                 else:
+                                    guard_status = "not-configured"
                                     decision, reason, revert_commit, best_metric = self._accept_or_reject(
                                         metric_value=metric_value,
                                         best_metric=best_metric,
                                         target=target,
                                         worktree=Path(engine.worktree_path),
                                     )
-                            else:
-                                guard_status = "not-configured"
-                                decision, reason, revert_commit, best_metric = self._accept_or_reject(
-                                    metric_value=metric_value,
-                                    best_metric=best_metric,
-                                    target=target,
-                                    worktree=Path(engine.worktree_path),
-                                )
 
-            if decision == "keep":
-                failure_count = 0
-            else:
-                failure_count += 1
+                if decision == "keep":
+                    failure_count = 0
+                else:
+                    failure_count += 1
 
-            metric_string = f"{metric_value:.6f}" if metric_value is not None else RESULT_ZERO if decision == "crash" else ""
-            best_string = f"{best_metric:.6f}"
-            delta_string = f"{(metric_value - best_metric):.6f}" if metric_value is not None else ""
-            row = ResultRow(
-                iteration=iteration,
-                timestamp=iso_now(),
-                branch=current_branch(Path(engine.worktree_path)),
-                commit=commit,
-                revert_commit=revert_commit,
-                metric=metric_string,
-                best_metric=best_string,
-                delta_from_best=delta_string,
-                verify_status=verify_status,
-                guard_status=guard_status,
-                decision=decision,
-                hypothesis=hypothesis,
-                files_touched=",".join(files),
-                artifact_path=str(context["dir"].relative_to(paths.root)),
-                decision_reason=reason,
-            )
+                metric_string = f"{metric_value:.6f}" if metric_value is not None else RESULT_ZERO if decision == "crash" else ""
+                best_string = f"{best_metric:.6f}"
+                delta_string = f"{(metric_value - best_metric):.6f}" if metric_value is not None else ""
+                row = ResultRow(
+                    iteration=iteration,
+                    timestamp=iso_now(),
+                    branch=current_branch(Path(engine.worktree_path)),
+                    commit=commit,
+                    revert_commit=revert_commit,
+                    metric=metric_string,
+                    best_metric=best_string,
+                    delta_from_best=delta_string,
+                    verify_status=verify_status,
+                    guard_status=guard_status,
+                    decision=decision,
+                    hypothesis=hypothesis,
+                    files_touched=",".join(files),
+                    artifact_path=context["artifact_path"],
+                    decision_reason=reason,
+                )
             append_result(paths, row)
             engine = replace(engine, latest_iteration=iteration, best_metric=best_metric, best_iteration=iteration if decision == "keep" else engine.best_iteration, updated_at=iso_now(), status="running")
             write_engine(paths, engine)
@@ -621,6 +640,7 @@ class Runner:
                 baseline_metric=baseline_metric,
                 best_metric=best_metric,
                 stop_reason=stop_reason,
+                artifact_policy=artifact_policy,
             )
         return paths
 
@@ -632,12 +652,16 @@ class Runner:
         unbounded: bool,
         findings_text: str | None = None,
         deadline_seconds: int | None = None,
+        artifact_policy: ArtifactPolicy = "standard",
     ) -> RunPaths:
         run_dir = self._resolve_run_dir(run_id)
         engine = load_engine(run_dir)
+        self._validate_resume_engine(run_dir, engine)
         if not engine.resumable:
             raise BlockedRunError(f"workflow {engine.workflow} is not resumable")
         paths = make_run_paths(self.repo_root, engine.run_id)
+        if paths.root.resolve() != run_dir.resolve():
+            raise BlockedRunError(f"run metadata does not match run directory: {run_dir.name}")
         target = load_target_snapshot(paths)
         return self.run_iterative_workflow(
             workflow=engine.workflow,
@@ -647,11 +671,13 @@ class Runner:
             unbounded=unbounded,
             findings_text=findings_text,
             deadline_seconds=deadline_seconds,
+            artifact_policy=artifact_policy,
         )
 
     def _prepare_or_resume_engine(self, *, paths: RunPaths, workflow: Workflow, target: TargetConfig, run_id: str) -> EngineState:
         if paths.engine_file.exists():
             existing = load_engine(paths.root)
+            self._validate_resume_engine(paths.root, existing)
             worktree = ensure_worktree(self.repo_root, existing.run_branch, run_id, existing.worktree_path)
             updated = replace(existing, worktree_path=str(worktree), updated_at=iso_now(), target_path=str(paths.target_file))
             write_engine(paths, updated)
@@ -676,6 +702,7 @@ class Runner:
         target_path: Path | None,
         worktree_path: Path,
         resumable: bool,
+        artifact_policy: ArtifactPolicy = "standard",
         workspace_kind: str = "worktree",
         deadline_seconds: int | None = None,
         prompt_bytes: int = 0,
@@ -705,12 +732,73 @@ class Runner:
             warning=warning,
             workspace_kind=workspace_kind,
             deadline_seconds=deadline_seconds,
+            artifact_policy=artifact_policy,
             prompt_bytes=prompt_bytes,
             context_bytes=context_bytes,
             selected_file_count=selected_file_count,
         )
 
-    def _ensure_baseline(self, *, paths: RunPaths, target: TargetConfig, engine: EngineState) -> tuple[float, float, int]:
+    def _is_minimal_artifacts(self, artifact_policy: ArtifactPolicy) -> bool:
+        return artifact_policy == "minimal"
+
+    @contextmanager
+    def _context_workspace(self, *, paths: RunPaths, artifact_policy: ArtifactPolicy, prefix: str) -> Any:
+        if self._is_minimal_artifacts(artifact_policy):
+            with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
+                yield Path(temp_dir)
+            return
+        paths.context_dir.mkdir(parents=True, exist_ok=True)
+        yield paths.context_dir
+
+    @contextmanager
+    def _run_context(self, *, paths: RunPaths, label: str, artifact_policy: ArtifactPolicy, prefix: str) -> Any:
+        if self._is_minimal_artifacts(artifact_policy):
+            with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
+                directory = Path(temp_dir)
+                yield {
+                    "dir": directory,
+                    "prompt": directory / "prompt.md",
+                    "final": directory / "codex-final.md",
+                    "verify_log": directory / "verify.log",
+                    "verify_artifacts": directory / "verify-artifacts",
+                    "guard_log": directory / "guard.log",
+                    "events": None,
+                    "artifact_path": "(ephemeral)",
+                }
+            return
+        directory = paths.iterations_dir / label
+        directory.mkdir(parents=True, exist_ok=True)
+        yield {
+            "dir": directory,
+            "prompt": directory / "prompt.md",
+            "final": directory / "codex-final.md",
+            "verify_log": directory / "verify.log",
+            "verify_artifacts": directory / "verify-artifacts",
+            "guard_log": directory / "guard.log",
+            "events": directory / "agent.jsonl",
+            "artifact_path": str(directory.relative_to(paths.root)),
+        }
+
+    @contextmanager
+    def _baseline_artifacts(self, *, paths: RunPaths, artifact_policy: ArtifactPolicy) -> Any:
+        if self._is_minimal_artifacts(artifact_policy):
+            with tempfile.TemporaryDirectory(prefix="autoresearch-baseline-") as temp_dir:
+                root = Path(temp_dir)
+                yield {
+                    "verify_log": root / "baseline-verify.log",
+                    "guard_log": root / "baseline-guard.log",
+                    "artifact_dir": root / "baseline",
+                    "artifact_path": "(ephemeral)",
+                }
+            return
+        yield {
+            "verify_log": paths.artifacts_dir / "baseline-verify.log",
+            "guard_log": paths.artifacts_dir / "baseline-guard.log",
+            "artifact_dir": paths.artifacts_dir / "baseline",
+            "artifact_path": str(paths.artifacts_dir.relative_to(paths.root)),
+        }
+
+    def _ensure_baseline(self, *, paths: RunPaths, target: TargetConfig, engine: EngineState, artifact_policy: ArtifactPolicy) -> tuple[float, float, int]:
         rows = read_results(paths)
         if rows:
             baseline_metric = float(rows[0]["metric"])
@@ -722,30 +810,31 @@ class Runner:
                 failures += 1
             return best_metric, baseline_metric, failures
 
-        baseline_verify = paths.artifacts_dir / "baseline-verify.log"
-        baseline_guard = paths.artifacts_dir / "baseline-guard.log"
-        verify_proc, verify_text = self._run_command(
-            target.verify.command,
-            Path(engine.worktree_path),
-            baseline_verify,
-            artifact_dir=paths.artifacts_dir / "baseline",
-            workflow=engine.workflow,
-        )
-        if verify_proc.returncode != 0:
-            raise BlockedRunError(f"baseline verify failed: {baseline_verify}")
-        baseline_metric = extract_metric(target.metric.extractor, verify_text, Path(engine.worktree_path), baseline_verify)
-        guard_status = "not-configured"
-        if target.guard:
-            guard_proc, _ = self._run_command(
-                target.guard.command,
+        with self._baseline_artifacts(paths=paths, artifact_policy=artifact_policy) as baseline_context:
+            baseline_verify = baseline_context["verify_log"]
+            baseline_guard = baseline_context["guard_log"]
+            verify_proc, verify_text = self._run_command(
+                target.verify.command,
                 Path(engine.worktree_path),
-                baseline_guard,
-                artifact_dir=paths.artifacts_dir / "baseline",
+                baseline_verify,
+                artifact_dir=baseline_context["artifact_dir"],
                 workflow=engine.workflow,
             )
-            if guard_proc.returncode != 0:
-                raise BlockedRunError(f"baseline guard failed: {baseline_guard}")
-            guard_status = f"exit:{guard_proc.returncode}"
+            if verify_proc.returncode != 0:
+                raise BlockedRunError(f"baseline verify failed: {baseline_verify}")
+            baseline_metric = extract_metric(target.metric.extractor, verify_text, Path(engine.worktree_path), baseline_verify)
+            guard_status = "not-configured"
+            if target.guard:
+                guard_proc, _ = self._run_command(
+                    target.guard.command,
+                    Path(engine.worktree_path),
+                    baseline_guard,
+                    artifact_dir=baseline_context["artifact_dir"],
+                    workflow=engine.workflow,
+                )
+                if guard_proc.returncode != 0:
+                    raise BlockedRunError(f"baseline guard failed: {baseline_guard}")
+                guard_status = f"exit:{guard_proc.returncode}"
         write_baseline(
             paths,
             {
@@ -777,7 +866,7 @@ class Runner:
             decision="baseline",
             hypothesis="baseline",
             files_touched="",
-            artifact_path=str(paths.artifacts_dir.relative_to(paths.root)),
+            artifact_path=baseline_context["artifact_path"],
             decision_reason="baseline",
         )
         append_result(paths, row)
@@ -831,22 +920,9 @@ class Runner:
             return metric_value > best_metric
         return metric_value < best_metric
 
-    def _iteration_context(self, paths: RunPaths, iteration: int) -> dict[str, Path]:
-        directory = paths.iterations_dir / str(iteration)
-        directory.mkdir(parents=True, exist_ok=True)
-        return {
-            "dir": directory,
-            "prompt": directory / "prompt.md",
-            "final": directory / "codex-final.md",
-            "verify_log": directory / "verify.log",
-            "verify_artifacts": directory / "verify-artifacts",
-            "guard_log": directory / "guard.log",
-            "events": directory / "agent.jsonl",
-        }
-
     def _resolve_run_dir(self, run_id: str | None) -> Path:
         if run_id:
-            path = self.repo_root / ".autoresearch" / "runs" / run_id
+            path = resolve_run_dir(self.repo_root, validate_run_id(run_id))
             if not path.exists():
                 raise BlockedRunError(f"run not found: {run_id}")
             return path
@@ -854,6 +930,19 @@ class Runner:
         if latest is None:
             raise BlockedRunError("no runs found to resume")
         return latest
+
+    def _validate_resume_engine(self, run_dir: Path, engine: EngineState) -> None:
+        if engine.run_id != run_dir.name:
+            raise BlockedRunError(f"run metadata mismatch for {run_dir.name}")
+        try:
+            target_repo = Path(engine.target_repo).resolve()
+        except Exception as exc:  # noqa: BLE001
+            raise BlockedRunError(f"invalid target repo in run metadata: {engine.target_repo}") from exc
+        if target_repo != self.repo_root:
+            raise BlockedRunError(f"run metadata points at a different repository: {engine.target_repo}")
+        expected_branch = f"autoresearch/{engine.workflow}/{engine.run_id}"
+        if engine.run_branch != expected_branch:
+            raise BlockedRunError(f"run metadata has unexpected branch: {engine.run_branch}")
 
     def _build_summary(
         self,
@@ -879,6 +968,7 @@ class Runner:
             f"- guard stayed green: {'yes' if guard_green else 'no'}",
             f"- stop reason: {stop_reason}",
             f"- workspace kind: {engine.workspace_kind}",
+            f"- artifact policy: {engine.artifact_policy}",
         ]
         if engine.deadline_seconds is not None:
             lines.append(f"- deadline seconds: {engine.deadline_seconds}")
@@ -910,7 +1000,10 @@ class Runner:
         baseline_metric: float,
         best_metric: float,
         stop_reason: str,
+        artifact_policy: ArtifactPolicy,
     ) -> None:
+        if artifact_policy == "minimal":
+            return
         changelog_lines = [
             "# skill-optimize changelog",
             "",
@@ -994,9 +1087,7 @@ class Runner:
 
 def load_findings_text(repo_root: Path, explicit_path: str | None = None) -> str | None:
     if explicit_path:
-        path = Path(explicit_path)
-        if not path.is_absolute():
-            path = repo_root / path
+        path = resolve_repo_path(repo_root, explicit_path, purpose="findings file")
         if path.exists():
             return path.read_text(encoding="utf-8")
     runs_root = repo_root / ".autoresearch" / "runs"

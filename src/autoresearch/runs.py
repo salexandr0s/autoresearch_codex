@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 
 from .models import EngineState, ResultRow, RunPaths, TargetConfig
+from .pathing import resolve_run_dir
 from .targets import dump_target, load_target
 
 
@@ -25,7 +26,7 @@ def make_run_id(name: str) -> str:
 
 
 def make_run_paths(repo_root: Path, run_id: str) -> RunPaths:
-    root = repo_root / ".autoresearch" / "runs" / run_id
+    root = resolve_run_dir(repo_root, run_id)
     iterations = root / "iterations"
     artifacts = root / "artifacts"
     context = root / "context"

@@ -7,6 +7,7 @@ from typing import Any, Literal
 Decision = Literal["baseline", "keep", "discard", "crash", "inconclusive", "blocked"]
 Workflow = Literal["plan", "loop", "debug", "fix", "security", "ship", "skill-optimize"]
 CompletionMode = Literal["model", "fallback"]
+ArtifactPolicy = Literal["standard", "minimal"]
 
 
 @dataclass(slots=True)
@@ -119,6 +120,7 @@ class EngineState:
     duration_seconds: float | None = None
     timed_out: bool = False
     completion_mode: CompletionMode = "model"
+    artifact_policy: ArtifactPolicy = "standard"
     prompt_bytes: int = 0
     context_bytes: int = 0
     selected_file_count: int = 0

@@ -54,10 +54,13 @@ def branch_exists(repo: Path, branch: str) -> bool:
 
 def ensure_worktree(repo: Path, branch: str, run_id: str, existing_path: str | None = None) -> Path:
     if existing_path:
-        path = Path(existing_path)
-        if path.exists():
+        path = Path(existing_path).resolve()
+        if _worktree_matches(repo, path, branch):
             return path
-    worktree_path = Path(tempfile.mkdtemp(prefix=f"autoresearch-{run_id}-"))
+    registered = _branch_worktree(repo, branch)
+    if registered is not None:
+        return registered
+    worktree_path = Path(tempfile.mkdtemp(prefix=f"autoresearch-{run_id}-")).resolve()
     if branch_exists(repo, branch):
         git(repo, "worktree", "add", str(worktree_path), branch)
     else:
@@ -119,3 +122,40 @@ def current_branch(repo: Path) -> str:
 def assert_worktree_clean(repo: Path) -> None:
     if changed_files(repo):
         raise ValidationError("worktree is not clean when a clean state is required")
+
+
+def _worktree_matches(repo: Path, path: Path, branch: str) -> bool:
+    target = path.resolve()
+    for item in _list_worktrees(repo):
+        if item["path"] == target and item.get("branch") == branch and target.exists():
+            return True
+    return False
+
+
+def _branch_worktree(repo: Path, branch: str) -> Path | None:
+    for item in _list_worktrees(repo):
+        if item.get("branch") == branch and item["path"].exists():
+            return item["path"]
+    return None
+
+
+def _list_worktrees(repo: Path) -> list[dict[str, Path | str | None]]:
+    proc = git(repo, "worktree", "list", "--porcelain")
+    worktrees: list[dict[str, Path | str | None]] = []
+    current: dict[str, Path | str | None] = {}
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            if current:
+                worktrees.append(current)
+                current = {}
+            continue
+        key, _, value = line.partition(" ")
+        if key == "worktree":
+            current["path"] = Path(value).resolve()
+        elif key == "branch":
+            current["branch"] = value.removeprefix("refs/heads/")
+        elif key == "HEAD":
+            current["head"] = value
+    if current:
+        worktrees.append(current)
+    return [item for item in worktrees if "path" in item]

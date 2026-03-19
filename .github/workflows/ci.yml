@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-and-security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tooling
+        run: python -m pip install --upgrade pip uv bandit pip-audit
+
+      - name: Sync project environment
+        run: uv sync
+
+      - name: Validate scaffold
+        run: python3 scripts/validate-codex-assets.py
+
+      - name: Secret scan
+        run: python3 scripts/scan-secrets.py
+
+      - name: Unit and integration tests
+        run: uv run python -m unittest discover -s tests -v
+
+      - name: Smoke suite
+        run: python3 scripts/smoke/run.py
+
+      - name: Release dry run
+        run: bash scripts/release.sh --dry-run
+
+      - name: Bandit
+        run: python -m bandit -q -r src scripts
+
+      - name: Dependency audit
+        run: |
+          uv export --format requirements-txt --no-hashes > /tmp/autoresearch-requirements.txt
+          pip-audit -r /tmp/autoresearch-requirements.txt

@@ -71,12 +71,15 @@ class RuntimeIntegrationTests(unittest.TestCase):
     def _copy_scaffold(self) -> None:
         shutil.copy2(REPO_ROOT / "AGENTS.md", self.repo / "AGENTS.md")
         shutil.copytree(REPO_ROOT / ".agents", self.repo / ".agents")
+        (self.repo / ".github").mkdir(parents=True, exist_ok=True)
+        shutil.copytree(REPO_ROOT / ".github" / "workflows", self.repo / ".github" / "workflows")
         shutil.copytree(REPO_ROOT / ".codex", self.repo / ".codex")
         (self.repo / ".autoresearch" / "targets").mkdir(parents=True, exist_ok=True)
         (self.repo / ".autoresearch" / "runs").mkdir(parents=True, exist_ok=True)
         shutil.copytree(REPO_ROOT / "codex", self.repo / "codex")
         (self.repo / "scripts").mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / "scripts" / "validate-codex-assets.py", self.repo / "scripts" / "validate-codex-assets.py")
+        shutil.copy2(REPO_ROOT / "scripts" / "scan-secrets.py", self.repo / "scripts" / "scan-secrets.py")
 
     def _init_git(self) -> None:
         self._run("git init -b main")
@@ -201,6 +204,14 @@ class RuntimeIntegrationTests(unittest.TestCase):
         target_path = Path(proc.stdout.strip())
         self.assertTrue(target_path.exists())
         self.assertIn("metric:", target_path.read_text(encoding="utf-8"))
+
+    def test_plan_rejects_target_path_outside_repo(self) -> None:
+        self._init_git()
+        (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        self._commit_all("baseline")
+        proc = self._cli("plan", "--goal", "Improve the fixture", "--target-path", "../outside.yaml", expect_ok=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("target path escapes repository root", proc.stderr)
 
     def test_plan_timeout_uses_fallback_target(self) -> None:
         self._init_git()
@@ -734,6 +745,67 @@ class RuntimeIntegrationTests(unittest.TestCase):
         summary = (resumed_dir / "summary.md").read_text(encoding="utf-8")
         self.assertIn("best metric: 1.000000", summary)
 
+    def test_resume_rejects_path_like_run_id(self) -> None:
+        self._init_git()
+        (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        self._commit_all("baseline")
+        proc = self._cli("resume", "--run-id", "../../tmp/bad", expect_ok=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("run id must be a single safe path segment", proc.stderr)
+
+    def test_resume_rejects_tampered_engine_metadata(self) -> None:
+        self._init_git()
+        (self.repo / "app.txt").write_text("score=1\n", encoding="utf-8")
+        (self.repo / "score.py").write_text(
+            "from pathlib import Path\ntext = Path('app.txt').read_text().strip().split('=')[1]\nprint(f'score: {text}')\n",
+            encoding="utf-8",
+        )
+        (self.repo / ".autoresearch" / "targets" / "default.yaml").write_text(
+            textwrap.dedent(
+                """
+                name: fixture
+                goal: Raise the score in app.txt
+                scope:
+                  include:
+                    - app.txt
+                  exclude: []
+                metric:
+                  name: score
+                  direction: higher
+                  extractor:
+                    type: regex
+                    value: 'score: ([0-9.]+)'
+                verify:
+                  command: python3 score.py
+                stopping:
+                  max_iterations: 1
+                  goal_threshold: null
+                  stagnation_reflect_after: 1
+                  stop_after_consecutive_failures: 2
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        self._commit_all("baseline")
+        self._set_queue([
+            {
+                "writes": [{"path": "app.txt", "content": "score=2\n"}],
+                "final": "Hypothesis: increase the score\nSummary: set the score to 2\n",
+            }
+        ])
+        first = self._cli("loop", "--max-iterations", "1")
+        run_dir = Path(first.stdout.strip())
+        engine_path = run_dir / "engine.json"
+        payload = json.loads(engine_path.read_text(encoding="utf-8"))
+        payload["run_id"] = "tampered-run"
+        engine_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+        resumed = self._cli("resume", "--run-id", run_dir.name, expect_ok=False)
+
+        self.assertNotEqual(resumed.returncode, 0)
+        self.assertIn("run metadata mismatch", resumed.stderr)
+
     def test_debug_security_and_ship_create_artifacts(self) -> None:
         self._init_git()
         (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
@@ -782,6 +854,85 @@ class RuntimeIntegrationTests(unittest.TestCase):
         artifact = (run_dir / "artifacts" / "findings.md").read_text(encoding="utf-8")
         self.assertIn("completion mode: fallback", summary)
         self.assertIn("fallback", artifact.lower())
+
+    def test_debug_minimal_artifact_policy_omits_context_and_agent_logs(self) -> None:
+        self._init_git()
+        (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        self._commit_all("baseline")
+        self._set_queue([
+            {
+                "final": json.dumps(
+                    {
+                        "title": "debug report",
+                        "summary": "generated debug artifact",
+                        "findings": [],
+                        "artifact_markdown": "# debug\n\ngenerated debug artifact\n",
+                    }
+                )
+            }
+        ])
+
+        proc = self._cli("debug", "--summary", "Investigate the fixture", "--artifact-policy", "minimal")
+
+        run_dir = Path(proc.stdout.strip())
+        self.assertTrue((run_dir / "artifacts" / "findings.md").exists())
+        self.assertFalse(any((run_dir / "context").iterdir()))
+        self.assertFalse(any((run_dir / "iterations").iterdir()))
+        summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertIn("artifact policy: minimal", summary)
+
+    def test_loop_minimal_artifact_policy_omits_iteration_logs(self) -> None:
+        self._init_git()
+        (self.repo / "app.txt").write_text("score=1\n", encoding="utf-8")
+        (self.repo / "score.py").write_text(
+            "from pathlib import Path\ntext = Path('app.txt').read_text().strip().split('=')[1]\nprint(f'score: {text}')\n",
+            encoding="utf-8",
+        )
+        (self.repo / ".autoresearch" / "targets" / "default.yaml").write_text(
+            textwrap.dedent(
+                """
+                name: fixture
+                goal: Raise the score in app.txt
+                scope:
+                  include:
+                    - app.txt
+                  exclude: []
+                metric:
+                  name: score
+                  direction: higher
+                  extractor:
+                    type: regex
+                    value: 'score: ([0-9.]+)'
+                verify:
+                  command: python3 score.py
+                guard:
+                  command: python3 -m py_compile score.py
+                stopping:
+                  max_iterations: 1
+                  goal_threshold: null
+                  stagnation_reflect_after: 1
+                  stop_after_consecutive_failures: 2
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        self._commit_all("baseline")
+        self._set_queue([
+            {
+                "writes": [{"path": "app.txt", "content": "score=2\n"}],
+                "final": "Hypothesis: increase the score\nSummary: set the score to 2\n",
+            }
+        ])
+
+        proc = self._cli("loop", "--max-iterations", "1", "--artifact-policy", "minimal")
+
+        run_dir = Path(proc.stdout.strip())
+        self.assertTrue((run_dir / "results.tsv").exists())
+        self.assertFalse((run_dir / "artifacts" / "baseline-verify.log").exists())
+        self.assertFalse(any((run_dir / "iterations").iterdir()))
+        summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertIn("artifact policy: minimal", summary)
 
     def test_ship_execute_stays_dry_run_only(self) -> None:
         self._init_git()

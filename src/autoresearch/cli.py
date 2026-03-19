@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan = subparsers.add_parser("plan", help="Generate a target file with Codex")
     add_common_runtime_args(plan)
     add_codex_execution_args(plan)
+    add_artifact_policy_arg(plan)
     plan.add_argument("--goal", required=True)
     plan.add_argument("--context", default="")
     plan.add_argument("--constraints", default="")
@@ -33,11 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     loop = subparsers.add_parser("loop", help="Run the experiment loop")
     add_common_runtime_args(loop)
     add_codex_execution_args(loop)
+    add_artifact_policy_arg(loop)
     add_iterative_args(loop)
 
     skill_optimize = subparsers.add_parser("skill-optimize", help="Optimize a SKILL.md with runner-backed evals")
     add_common_runtime_args(skill_optimize)
     add_codex_execution_args(skill_optimize)
+    add_artifact_policy_arg(skill_optimize)
     skill_optimize.add_argument("--skill", required=True, help="Path to the target SKILL.md")
     skill_optimize.add_argument("--inputs-file", required=True, help="YAML file describing test prompts")
     skill_optimize.add_argument("--evals-file", required=True, help="YAML file describing binary evals")
@@ -51,17 +54,20 @@ def build_parser() -> argparse.ArgumentParser:
     debug = subparsers.add_parser("debug", help="Run a debug investigation")
     add_common_runtime_args(debug)
     add_codex_execution_args(debug)
+    add_artifact_policy_arg(debug)
     debug.add_argument("--summary", required=True, help="Problem statement or investigation request")
 
     fix = subparsers.add_parser("fix", help="Run a fix loop")
     add_common_runtime_args(fix)
     add_codex_execution_args(fix)
+    add_artifact_policy_arg(fix)
     add_iterative_args(fix)
     fix.add_argument("--findings-file", help="Optional findings artifact to use as context")
 
     security = subparsers.add_parser("security", help="Run a security review")
     add_common_runtime_args(security)
     add_codex_execution_args(security)
+    add_artifact_policy_arg(security)
     security.add_argument("--summary", default="Perform a security review of the repository")
     security.add_argument("--remediate", action="store_true", help="Use the loop engine to attempt remediations")
     security.add_argument("--target", help="Target file for remediation mode")
@@ -71,12 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
     ship = subparsers.add_parser("ship", help="Generate a ship checklist or dry-run plan")
     add_common_runtime_args(ship)
     add_codex_execution_args(ship)
+    add_artifact_policy_arg(ship)
     ship.add_argument("--summary", default="Prepare a release or deployment checklist")
     ship.add_argument("--execute", action="store_true", help="Request execute mode; the runner will refuse unattended side effects")
 
     resume = subparsers.add_parser("resume", help="Resume the latest or a named iterative run")
     add_common_runtime_args(resume)
     add_codex_execution_args(resume)
+    add_artifact_policy_arg(resume)
     resume.add_argument("--run-id", help="Run id to resume; defaults to the latest run")
     resume.add_argument("--max-iterations", type=int)
     resume.add_argument("--unbounded", action="store_true")
@@ -95,6 +103,15 @@ def add_common_runtime_args(parser: argparse.ArgumentParser) -> None:
 
 def add_codex_execution_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--deadline-seconds", type=int, help="Optional deadline for a Codex-backed workflow run")
+
+
+def add_artifact_policy_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--artifact-policy",
+        choices=["standard", "minimal"],
+        default="standard",
+        help="How much run context/log data to persist under .autoresearch/runs/",
+    )
 
 
 def add_iterative_args(parser: argparse.ArgumentParser) -> None:
@@ -129,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_name=args.target_name,
                 target_path=target_path,
                 deadline_seconds=args.deadline_seconds,
+                artifact_policy=args.artifact_policy,
             )
             print(str(written))
             return 0
@@ -142,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations_override=args.max_iterations,
                 unbounded=args.unbounded,
                 deadline_seconds=args.deadline_seconds,
+                artifact_policy=args.artifact_policy,
             )
             print(str(paths.root))
             return 0
@@ -158,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations=args.max_iterations,
                 unbounded=args.unbounded,
                 deadline_seconds=args.deadline_seconds,
+                artifact_policy=args.artifact_policy,
             )
             print(str(paths.root))
             return 0
@@ -173,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
                 unbounded=args.unbounded,
                 findings_text=findings,
                 deadline_seconds=args.deadline_seconds,
+                artifact_policy=args.artifact_policy,
             )
             print(str(paths.root))
             return 0
@@ -184,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                 artifact_name="findings.md",
                 json_artifact_name="findings.json",
                 deadline_seconds=args.deadline_seconds,
+                artifact_policy=args.artifact_policy,
             )
             print(str(paths.root))
             return 0
@@ -197,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_iterations_override=args.max_iterations,
                     unbounded=args.unbounded,
                     deadline_seconds=args.deadline_seconds,
+                    artifact_policy=args.artifact_policy,
                 )
             else:
                 paths = runner.run_report_workflow(
@@ -205,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
                     artifact_name="security-report.md",
                     json_artifact_name="security-findings.json",
                     deadline_seconds=args.deadline_seconds,
+                    artifact_policy=args.artifact_policy,
                 )
             print(str(paths.root))
             return 0
@@ -220,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                 extra_artifacts={"release-plan.md": summary + "\n"},
                 secondary_markdown_name="release-plan.md",
                 deadline_seconds=args.deadline_seconds,
+                artifact_policy=args.artifact_policy,
             )
             print(str(paths.root))
             return 0
@@ -232,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
                 unbounded=args.unbounded,
                 findings_text=findings,
                 deadline_seconds=args.deadline_seconds,
+                artifact_policy=args.artifact_policy,
             )
             print(str(paths.root))
             return 0
