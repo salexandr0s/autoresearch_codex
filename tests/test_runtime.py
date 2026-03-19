@@ -531,6 +531,52 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertIn("\tinconclusive\t", results[2])
         self.assertIn("verify_ambiguous", results[2])
 
+    def test_skill_optimize_surfaces_truncation_metadata_in_artifacts(self) -> None:
+        self._init_git()
+        skill_path, inputs_file, evals_file = self._write_skill_optimize_fixture()
+        self._commit_all("baseline")
+        self._set_queue(
+            [
+                {
+                    "writes": [{"path": "notes/long.txt", "content": "é" * 5000}],
+                    "final": ("Use soft pastel blue. " * 800).strip() + "\n",
+                },
+                {
+                    "final": json.dumps(
+                        {
+                            "results": [
+                                {"id": "pastel_only", "passed": True, "reason": "pastel colors only"},
+                                {"id": "no_numbers", "passed": True, "reason": "no numeric ordering markers"},
+                            ]
+                        }
+                    )
+                },
+                {"final": "Hypothesis: no-op\nSummary: no changes\n"},
+            ]
+        )
+
+        proc = self._cli(
+            "skill-optimize",
+            "--skill",
+            str(skill_path.relative_to(self.repo)),
+            "--inputs-file",
+            str(inputs_file.relative_to(self.repo)),
+            "--evals-file",
+            str(evals_file.relative_to(self.repo)),
+            "--runs-per-experiment",
+            "1",
+            "--max-iterations",
+            "1",
+        )
+
+        run_dir = Path(proc.stdout.strip())
+        sample_dir = run_dir / "artifacts" / "baseline" / "scored-runs" / "palette-run-1"
+        changed_files = json.loads((sample_dir / "changed-files.json").read_text(encoding="utf-8"))
+        sample_summary = json.loads((sample_dir / "sample-summary.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(any(item["path"] == "notes/long.txt" and item["truncated"] for item in changed_files))
+        self.assertTrue(sample_summary["bundle_truncated"])
+
     def test_skill_optimize_discards_out_of_scope_changes(self) -> None:
         self._init_git()
         skill_path, inputs_file, evals_file = self._write_skill_optimize_fixture()
